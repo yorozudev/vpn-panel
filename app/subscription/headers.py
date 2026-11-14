@@ -1,3 +1,4 @@
+import os
 import re
 from urllib.parse import quote
 
@@ -10,10 +11,19 @@ def build_content_disposition(username: str) -> str:
 
 
 def get_routing_header(user_agent: str, settings: dict) -> dict:
-    """Build optional routing header for Happ/v2raytun clients."""
+    """Build optional routing header for Happ/v2raytun/Incy clients.
+
+    Incy reads the same `Routing` header as Happ and expects an
+    `incy://routing/onadd/...` deeplink as its value.
+    """
     routing_value = ""
     if re.search(r"v2raytun", user_agent or "", re.IGNORECASE):
         routing_value = str(settings.get("sub_routing_v2raytun") or "").strip()
+    elif re.search(r"\bincy(?:/|\b)", user_agent or "", re.IGNORECASE):
+        # Значение: настройка панели sub_routing_incy, либо переменная окружения INCY_ROUTING
+        routing_value = str(
+            settings.get("sub_routing_incy") or os.environ.get("INCY_ROUTING", "")
+        ).strip()
     elif re.search(r"\bhapp(?:/|\b)", user_agent or "", re.IGNORECASE):
         routing_value = str(settings.get("sub_routing_happ") or "").strip()
 
