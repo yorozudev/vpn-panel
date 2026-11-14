@@ -25,13 +25,48 @@ def resolve_pay_url(bot_settings: dict) -> str:
         return ""
     return value
 
+def user_has_bs_access(db: Session, dbuser) -> bool:
+    nodes = crud.get_nodes(db)
+    bs_node_ids = {
+        node.id
+        for node in nodes
+        if node.is_bs
+    }
+
+    if not bs_node_ids:
+        return False
+
+    bs_inbound_tags = {
+        inbound.tag
+        for node in nodes
+        if node.id in bs_node_ids
+        for inbound in node.inbounds
+    }
+
+    # Если БС является exit-нодой каскада, пользователю нужен
+    # entry_inbound_tag соответствующей entry-ноды.
+    for node in nodes:
+        for route in node.cascade_routes:
+            if route.exit_node_id in bs_node_ids:
+                bs_inbound_tags.add(route.entry_inbound_tag)
+
+    user_inbound_tags = {
+        tag
+        for tags in (dbuser.inbounds or {}).values()
+        for tag in tags
+    }
+
+    return not bs_inbound_tags.isdisjoint(user_inbound_tags)
+
 
 def build_subscription_page_context(db: Session, dbuser, token: str, *, revoked: bool = False) -> dict:
     """Контекст jinja-шаблона страницы подписки (HTML-ветка)."""
     bot_settings = resolve_bot_settings(dbuser)
     devices = crud.get_user_active_devices(db, dbuser)
+    show_bs_traffic = user_has_bs_access(db, dbuser)
     return {
         "user": UserResponse.model_validate(dbuser),
+        "show_bs_traffic": show_bs_traffic,
         "devices": devices,
         "devices_json": devices_json(devices),
         "token": token,

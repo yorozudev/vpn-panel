@@ -61,7 +61,8 @@
         expire: "{% if not user.expire %}0{% else %}{{ user.expire }}{% endif %}",
         reset_strategy: "{{ user.data_limit_reset_strategy.value }}",
         bs_monthly_used: "{{ user.bs_monthly_used or 0 }}",
-        bs_monthly_limit_total: "{% if not user.bs_monthly_limit_total %}0{% else %}{{ user.bs_monthly_limit_total }}{% endif %}"
+        bs_monthly_limit_total: "{% if not user.bs_monthly_limit_total %}0{% else %}{{ user.bs_monthly_limit_total }}{% endif %}",
+        show_bs_access: "{{ 1 if show_bs_traffic else 0 }}" === "1"
       };
 
       function bytesFormat(bytes, decimals = 2) {
@@ -340,7 +341,10 @@ get alternativeApps() {
           // строка белого списка: есть лимит или уже есть расход — без лимита «расход/Безлимит»;
           // у кого белого списка нет совсем (ни лимита, ни расхода), строки нет
           get isBsActive() {
-            return this.user.bs_monthly_limit_total > 0 || this.user.bs_monthly_used > 0;
+            return this.user.show_bs_access && (
+              this.user.bs_monthly_limit_total > 0 ||
+              this.user.bs_monthly_used > 0
+            );
           },
           get bsTrafficText() {
             const used = bytesFormat(this.user.bs_monthly_used);
