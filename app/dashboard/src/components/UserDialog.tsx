@@ -58,6 +58,7 @@ import { Bot } from "types/Bot";
 import {
   GIB,
   bsExtraGbSchema,
+  bsMonthlyLimitGbSchema,
   shouldSubmitBsExtra,
 } from "utils/bsExtraForm";
 import { relativeExpiryDate } from "utils/dateFormatter";
@@ -97,8 +98,10 @@ const UserUsageIcon = chakra(ChartPieIcon, {
 
 export type UserDialogProps = {};
 
-export type FormType = Omit<UserCreate, "bs_extra"> & {
+export type FormType = Omit<UserCreate, "bs_extra" | "bs_monthly_limit"> & {
   selected_proxies: ProxyKeys;
+  /** Персональный месячный БС-лимит в ГБ; null возвращает глобальное поведение */
+  bs_monthly_limit?: number | null;
   /** Купленный БС-трафик в ГБ (в API уходит как bs_extra в байтах) */
   bs_extra?: number | null;
   /** Пользователь менял поле — слать введённое, даже если цифра совпала с отображаемой */
@@ -117,7 +120,12 @@ const formatUser = (user: User): FormType => {
     data_limit: user.data_limit
       ? Number((user.data_limit / GIB).toFixed(5))
       : user.data_limit,
+    bs_monthly_limit:
+      user.bs_monthly_limit == null
+        ? null
+        : Number((user.bs_monthly_limit / GIB).toFixed(5)),
     bs_extra:
+      user.bs_monthly_limit == null &&
       user.bs_monthly_limit_total != null && user.bs_monthly_limit_total > 0
         ? Number(((user.bs_extra_effective ?? 0) / GIB).toFixed(5))
         : null,
@@ -138,6 +146,7 @@ const getDefaultValues = (): FormType => {
   return {
     selected_proxies: Object.keys(defaultInbounds) as ProxyKeys,
     data_limit: null,
+    bs_monthly_limit: null,
     bs_extra: null,
     bs_extra_dirty: false,
     device_limit: null,
@@ -206,6 +215,7 @@ const baseSchema = {
       if (str) return Number((parseFloat(String(str)) * GIB).toFixed(5));
       return 0;
     }),
+  bs_monthly_limit: bsMonthlyLimitGbSchema,
   bs_extra: bsExtraGbSchema,
   bs_extra_dirty: z.boolean().optional(),
   device_limit: z
@@ -321,9 +331,9 @@ export const UserDialog: FC<UserDialogProps> = () => {
     []
   );
 
-  const [dataLimit, userStatus] = useWatch({
+  const [dataLimit, userStatus, bsMonthlyLimit] = useWatch({
     control: form.control,
-    name: ["data_limit", "status"],
+    name: ["data_limit", "status", "bs_monthly_limit"],
   });
 
   const usageTitle = t("userDialog.total");
@@ -357,7 +367,13 @@ export const UserDialog: FC<UserDialogProps> = () => {
     const method = isEditing ? "edited" : "created";
     setError(null);
 
-    const { selected_proxies, bs_extra, bs_extra_dirty, ...rest } = values;
+    const {
+      selected_proxies,
+      bs_monthly_limit,
+      bs_extra,
+      bs_extra_dirty,
+      ...rest
+    } = values;
 
     let body: UserCreate = {
       ...rest,
@@ -374,7 +390,16 @@ export const UserDialog: FC<UserDialogProps> = () => {
           ? values.status
           : "active",
     };
-    if (isEditing && shouldSubmitBsExtra(bs_extra, bs_extra_dirty)) {
+    // В глобальном режиме не шлём null вместе с bs_extra: это независимые операции.
+    // null отправляем только для очистки ранее заданного персонального override.
+    if (!isEditing || bs_monthly_limit != null || editingUser?.bs_monthly_limit != null) {
+      body.bs_monthly_limit = bs_monthly_limit ?? null;
+    }
+    if (
+      bs_monthly_limit == null &&
+      isEditing &&
+      shouldSubmitBsExtra(bs_extra, bs_extra_dirty)
+    ) {
       body.bs_extra = bs_extra;
     }
 
@@ -681,7 +706,30 @@ export const UserDialog: FC<UserDialogProps> = () => {
                             }}
                           />
                         </FormControl>
-                        {isEditing &&
+                        <FormControl mb={"10px"}>
+                          <FormLabel>{t("userDialog.bsMonthlyLimit")}</FormLabel>
+                          <Controller
+                            control={form.control}
+                            name="bs_monthly_limit"
+                            render={({ field }) => (
+                              <Input
+                                endAdornment="GB"
+                                type="number"
+                                size="sm"
+                                borderRadius="6px"
+                                onChange={field.onChange}
+                                disabled={disabled}
+                                error={form.formState.errors.bs_monthly_limit?.message}
+                                value={field.value == null ? "" : String(field.value)}
+                              />
+                            )}
+                          />
+                          <FormHelperText>
+                            {t("userDialog.bsMonthlyLimitHint")}
+                          </FormHelperText>
+                        </FormControl>
+                        {bsMonthlyLimit == null &&
+                          isEditing &&
                           editingUser?.bs_monthly_limit_total != null &&
                           editingUser.bs_monthly_limit_total > 0 && (
                             <FormControl mb={"10px"}>

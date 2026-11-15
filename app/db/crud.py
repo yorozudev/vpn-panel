@@ -876,6 +876,7 @@ def create_user(db: Session, user: UserCreate, admin: Admin = None) -> User:
         on_hold_expire_duration=(user.on_hold_expire_duration or None),
         on_hold_timeout=(user.on_hold_timeout or None),
         auto_delete_in_days=user.auto_delete_in_days,
+        bs_monthly_limit=user.bs_monthly_limit,
         next_plan=NextPlan(
             data_limit=user.next_plan.data_limit,
             expire=user.next_plan.expire,
@@ -937,6 +938,10 @@ def update_user(db: Session, dbuser: User, modify: UserModify) -> User:
     """
     if modify.bs_extra is not None and modify.bs_limit_total is not None:
         raise ValueError("Нельзя задать bs_extra и bs_limit_total одновременно")
+    if "bs_monthly_limit" in modify.model_fields_set and (
+        modify.bs_extra is not None or modify.bs_limit_total is not None
+    ):
+        raise ValueError("Нельзя менять персональный БС-лимит вместе с bs_extra или bs_limit_total")
 
     added_proxies: dict[ProxyTypes, Proxy] = {}
     if modify.proxies:
@@ -1039,6 +1044,10 @@ def update_user(db: Session, dbuser: User, modify: UserModify) -> User:
             )
         elif dbuser.next_plan is not None:
             db.delete(dbuser.next_plan)
+
+    if "bs_monthly_limit" in modify.model_fields_set:
+        # omitted = не менять; явный null = вернуться к глобальному лимиту и пулу.
+        dbuser.bs_monthly_limit = modify.bs_monthly_limit
 
     if modify.bs_extra is not None:
         set_user_bs_extra_amount(db, dbuser, modify.bs_extra)
@@ -2359,11 +2368,22 @@ def get_bs_state(db: Session, dbuser: User) -> dict[str, int]:
     from app.xray.bs_limit import monthly_effective_limit, period_keys
 
     user_id = cast(int, dbuser.id)
-    monthly_limit = get_bs_monthly_limit(db)
     yyyymm = period_keys(datetime.utcnow())
+    monthly_used = get_bs_usage_totals(db, user_id, yyyymm)
+    if dbuser.bs_monthly_limit is not None:
+        # Персональный override не зависит от глобальной настройки и не расходует пул.
+        personal_limit = int(dbuser.bs_monthly_limit)
+        return {
+            "monthly_used": monthly_used,
+            "monthly_limit": personal_limit,
+            "pool": 0,
+            "limit_total": personal_limit,
+        }
+
+    monthly_limit = get_bs_monthly_limit(db)
     pool = normalize_bs_extra_period(db, user_id, monthly_limit, yyyymm, persist=False)
     return {
-        "monthly_used": get_bs_usage_totals(db, user_id, yyyymm),
+        "monthly_used": monthly_used,
         "monthly_limit": monthly_limit,
         "pool": pool,
         "limit_total": monthly_effective_limit(monthly_limit, pool) if monthly_limit else 0,

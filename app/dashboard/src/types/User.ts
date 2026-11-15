@@ -53,6 +53,8 @@ export type User = {
   bot_username?: string | null;
   online_at: string;
   bs_monthly_used?: number | null;
+  /** null = глобальный лимит + пул, 0 = запрет, N = точный персональный лимит */
+  bs_monthly_limit?: number | null;
   bs_monthly_limit_total?: number | null;
   /** Купленный БС-трафик без базового лимита панели, байты */
   bs_extra_effective?: number | null;
@@ -64,6 +66,7 @@ export type UserCreate = Pick<
   | "proxies"
   | "expire"
   | "data_limit"
+  | "bs_monthly_limit"
   | "device_limit"
   | "data_limit_reset_strategy"
   | "on_hold_expire_duration"

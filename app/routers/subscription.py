@@ -218,8 +218,13 @@ def render_subscription(db: Session, ctx: SubscriptionRenderContext, plan: Subsc
     кэш; привязка документа к серверу лежит прямо на хосте (host["client_config_id"]).
     """
     monthly_limit = int(ctx.panel_settings.get("bs_monthly_limit") or 0)
-    # Загрузчик не создаём без лимита: тогда рендер не пойдёт в таблицы БС-расхода.
-    bs_usage_suffix = (lambda: load_bs_usage_suffix(db, ctx.user_id, monthly_limit)) if monthly_limit else None
+    personal_limit = ctx.user.bs_monthly_limit
+    effective_limit = personal_limit if personal_limit is not None else monthly_limit
+    # При персональном лимите суффикс работает и при глобальном 0. Нулевой override
+    # сюда обычно не доходит: БС-хосты уже заменены заглушками джобой блокировки.
+    bs_usage_suffix = (
+        lambda: load_bs_usage_suffix(db, ctx.user_id, monthly_limit, personal_limit)
+    ) if effective_limit else None
     conf = generate_subscription(
         user=ctx.user,
         config_format=plan.config_format,

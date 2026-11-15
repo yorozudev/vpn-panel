@@ -27,6 +27,30 @@ export function parseBsExtraGbInput(
   return Number((n * GIB).toFixed(5));
 }
 
+export const bsMonthlyLimitGbSchema = z
+  .union([z.string(), z.number()])
+  .nullable()
+  .optional()
+  .superRefine((val, ctx) => {
+    if (val === "" || val === null || val === undefined) {
+      return;
+    }
+    try {
+      parseBsExtraGbInput(val);
+    } catch {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Must be 0 or greater",
+      });
+    }
+  })
+  .transform((val) => {
+    if (val === "" || val === null || val === undefined) {
+      return null;
+    }
+    return parseBsExtraGbInput(val) ?? null;
+  });
+
 export const bsExtraGbSchema = z
   .union([z.string(), z.number()])
   .nullable()

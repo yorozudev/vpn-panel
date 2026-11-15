@@ -29,9 +29,17 @@ def build_bs_context(
     )
 
 
-def load_bs_usage_suffix(db: Session, user_id: int, monthly_limit: int) -> str:
-    """Суффикс имени БС-хоста. Вызывать только если лимит > 0 и хост реально выдаётся."""
+def load_bs_usage_suffix(
+    db: Session,
+    user_id: int,
+    monthly_limit: int,
+    personal_limit: int | None = None,
+) -> str:
+    """Суффикс имени БС-хоста. Вызывать только если итоговый лимит > 0."""
     yyyymm = period_keys(datetime.utcnow())
-    pool = crud.normalize_bs_extra_period(db, user_id, monthly_limit, yyyymm, persist=False)
     used = crud.get_bs_usage_totals(db, user_id, yyyymm)
+    if personal_limit is not None:
+        # Пул не нормализуем и не прибавляем: override задаёт точный месячный потолок.
+        return format_bs_usage_suffix(used, personal_limit)
+    pool = crud.normalize_bs_extra_period(db, user_id, monthly_limit, yyyymm, persist=False)
     return format_bs_usage_suffix(used, monthly_effective_limit(monthly_limit, pool))

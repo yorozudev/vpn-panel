@@ -234,6 +234,8 @@
   "userDialog.custom": "انتخابی",
   "userDialog.dataLimit": "حد مصرف داده",
   "userDialog.bsDataLimit": "ترافیک اضافی BS",
+  "userDialog.bsMonthlyLimit": "حد ماهانه شخصی BS",
+  "userDialog.bsMonthlyLimitHint": "خالی — حد عمومی، 0 — دسترسی BS غیرفعال",
   "userDialog.deviceLimit": "حداکثر دستگاه",
   "userDialog.devicesButton": "دستگاه‌ها",
   "userDialog.devicesTitle": "دستگاه‌ها",

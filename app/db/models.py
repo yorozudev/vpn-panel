@@ -225,6 +225,8 @@ class User(Base):
     legacy_vless_enabled = Column(Boolean, nullable=False, default=True, server_default=text("1"))
     legacy_vless_last_activity_at = Column(DateTime, nullable=True, default=None)
     legacy_vless_disabled_at = Column(DateTime, nullable=True, default=None)
+    # NULL = глобальный лимит + bs_extra; 0 = БС запрещён; N > 0 = точный лимит.
+    bs_monthly_limit = Column(BigInteger, nullable=True, default=None)
     bs_extra = Column(BigInteger, nullable=True, default=None)
     bs_extra_period = Column(String(7), nullable=True, default=None)
 
@@ -278,6 +280,9 @@ class User(Base):
         чтобы список пользователей не ходил в БД дважды, а смена месяца на живом
         объекте не отдавала вчерашний пересчёт.
         """
+        if self.bs_monthly_limit is not None:
+            return None
+
         from sqlalchemy.orm import object_session
 
         from app.services.panel_settings import get_bs_monthly_limit
@@ -311,7 +316,10 @@ class User(Base):
 
     @property
     def bs_monthly_limit_total(self) -> int | None:
-        """Месячный БС-потолок (лимит панели + купленный пул), None если лимит не задан."""
+        """Персональный потолок либо лимит панели + пул; None, если лимит не задан."""
+        if self.bs_monthly_limit is not None:
+            return int(self.bs_monthly_limit)
+
         from app.xray.bs_limit import monthly_effective_limit
 
         state = self._bs_pool_state()

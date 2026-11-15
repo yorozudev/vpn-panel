@@ -20,6 +20,7 @@ from app.xray.bs_limit import (
     aggregate_bs_usage,
     carry_over_pool,
     diff_blocks,
+    over_limit,
     over_limit_monthly_pool,
     period_keys,
 )
@@ -80,8 +81,13 @@ def review_bs_nodes():
             yyyymm,
         )
 
-        # Несброшенные строки нужны только по тем, кого мы проверяем ниже (totals).
-        user_ids = list(totals.keys())
+        # Персональный 0 блокирует даже без строк расхода. Поэтому проверяем и всех
+        # пользователей с override, а не только присутствующих в текущем usage.
+        override_user_ids = {
+            uid
+            for (uid,) in db.query(User.id).filter(User.bs_monthly_limit.is_not(None)).all()
+        }
+        user_ids = list(totals.keys() | override_user_ids)
         stale_rows = (
             db.query(
                 NodeUserBsUsage.user_id,
@@ -105,8 +111,10 @@ def review_bs_nodes():
         monthly_limit = get_bs_monthly_limit(db)
         user_info = (
             {
-                uid: (bs_extra or 0, bs_extra_period)
-                for uid, bs_extra, bs_extra_period in db.query(User.id, User.bs_extra, User.bs_extra_period)
+                uid: (personal_limit, bs_extra or 0, bs_extra_period)
+                for uid, personal_limit, bs_extra, bs_extra_period in db.query(
+                    User.id, User.bs_monthly_limit, User.bs_extra, User.bs_extra_period
+                )
                 .filter(User.id.in_(user_ids))
                 .all()
             }
@@ -115,8 +123,14 @@ def review_bs_nodes():
         )
 
         over_users = set()
-        for uid, monthly_used in totals.items():
-            bs_extra, extra_period = user_info.get(uid, (0, None))
+        for uid in user_ids:
+            personal_limit, bs_extra, extra_period = user_info.get(uid, (None, 0, None))
+            monthly_used = totals.get(uid, 0)
+            if personal_limit is not None:
+                # В отличие от глобального 0 (лимит не задан), персональный 0 — запрет.
+                if personal_limit == 0 or over_limit(monthly_used, personal_limit):
+                    over_users.add(uid)
+                continue
             pool = _effective_pool(bs_extra, extra_period, yyyymm, stale.get(uid, []), monthly_limit)
             if over_limit_monthly_pool(monthly_used, monthly_limit, pool):
                 over_users.add(uid)

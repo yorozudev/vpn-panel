@@ -70,6 +70,11 @@ class User(BaseModel):
     on_hold_timeout: datetime | None | None = Field(None, nullable=True)
 
     auto_delete_in_days: int | None = Field(None, nullable=True)
+    bs_monthly_limit: int | None = Field(
+        default=None,
+        ge=0,
+        description="Персональный месячный БС-лимит: null — глобальный, 0 — запрет, N — точный лимит",
+    )
     bs_extra: int | None = Field(
         default=None, ge=0, description="Доступный сверх базы БС-трафик в текущем месяце (байты)"
     )
@@ -104,6 +109,14 @@ class User(BaseModel):
             raise ValueError("bs_extra must be an integer or a float, not a string")
         if v < 0:
             raise ValueError("bs_extra must be 0 or greater")
+        return int(v)
+
+    @field_validator("bs_monthly_limit", mode="before")
+    def cast_bs_monthly_limit_to_int(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError("bs_monthly_limit must be an integer or a float, not a string")
         return int(v)
 
     @field_validator("proxies", mode="before")
