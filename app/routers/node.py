@@ -12,12 +12,14 @@ from app.models.admin import Admin
 from app.models.node import (
     NodeCreate,
     NodeModify,
+    NodeRealtimeResponse,
     NodeResponse,
     NodeSettings,
     NodeStatus,
     NodesUsageResponse,
 )
 from app.models.proxy import ProxyHost
+from app.services.node_realtime import get_nodes_realtime
 from app.utils import responses
 
 router = APIRouter(tags=["Node"], prefix="/api", responses={401: responses._401, 403: responses._403})
@@ -190,6 +192,16 @@ def remove_node(
     xray.hosts.update()
     logger.info(f'Node "{dbnode.name}" deleted')
     return {}
+
+
+@router.get("/nodes/realtime", response_model=list[NodeRealtimeResponse])
+def get_nodes_realtime_snapshot(
+    db: Session = Depends(get_db),
+    _: Admin = Depends(Admin.check_sudo_admin),
+):
+    """Последний кешированный снимок; запрос не обращается к Xray или exporter."""
+    node_ids = [node.id for node in crud.get_nodes(db)]
+    return get_nodes_realtime(node_ids)
 
 
 @router.get("/nodes/usage", response_model=NodesUsageResponse)

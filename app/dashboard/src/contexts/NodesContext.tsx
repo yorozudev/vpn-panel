@@ -118,6 +118,20 @@ function withHostingLimitBytes(body: NodeType) {
 }
 
 export const FetchNodesQueryKey = "fetch-nodes-query-key";
+export const FetchNodesRealtimeQueryKey = "fetch-nodes-realtime-query-key";
+
+export const NodeRealtimeSchema = z.object({
+  node_id: z.number(),
+  online_users: z.number().nullable(),
+  cpu_percent: z.number().nullable(),
+  memory_percent: z.number().nullable(),
+  download_bytes_per_second: z.number().nullable(),
+  upload_bytes_per_second: z.number().nullable(),
+  measured_at: z.string().nullable(),
+  metrics_available: z.boolean(),
+});
+
+export type NodeRealtimeType = z.infer<typeof NodeRealtimeSchema>;
 
 export type NodeStore = {
   nodes: NodeType[];
@@ -137,6 +151,17 @@ export const useNodesQuery = () => {
     queryKey: FetchNodesQueryKey,
     queryFn: useNodes.getState().fetchNodes,
     refetchInterval: isEditingNodes ? 3000 : undefined,
+    refetchOnWindowFocus: false,
+  });
+};
+
+export const useNodesRealtimeQuery = (enabled: boolean) => {
+  return useQuery({
+    queryKey: FetchNodesRealtimeQueryKey,
+    queryFn: () => fetch("/nodes/realtime") as Promise<NodeRealtimeType[]>,
+    enabled,
+    refetchInterval: enabled ? 10000 : false,
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: false,
   });
 };

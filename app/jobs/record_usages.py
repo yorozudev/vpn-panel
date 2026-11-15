@@ -13,6 +13,7 @@ from sqlalchemy.sql.dml import Insert
 from app import logger, scheduler, xray
 from app.db import GetDB, crud
 from app.db.models import Admin, BotBsDaily, Node, NodeUsage, NodeUserBsUsage, NodeUserUsage, System, User
+from app.services.node_realtime import set_nodes_online
 from app.utils.concurrency import get_xray_executor
 from app.xray.bs_limit import bs_counter_step, period_keys
 from config import (
@@ -324,12 +325,24 @@ def record_user_usages():
     futures = {node_id: executor.submit(get_users_stats, api) for node_id, api in api_instances.items()}
     # Сбой одной ноды не должен ронять весь джоб и терять статистику остальных.
     api_params = {}
+    failed_nodes = set()
     for node_id, future in futures.items():
         try:
             api_params[node_id] = future.result()
         except Exception as e:
             logger.warning(f"[record_user_usages] failed to collect stats for node {node_id}: {type(e).__name__}: {e}")
             api_params[node_id] = []
+            failed_nodes.add(node_id)
+
+    # Тот же ответ Xray используем для realtime online: никаких дополнительных
+    # обращений к нодам или SQL. None отличает ошибку сбора от настоящего нуля.
+    set_nodes_online(
+        {
+            node_id: (None if node_id in failed_nodes else len({param["uid"] for param in params}))
+            for node_id, params in api_params.items()
+            if node_id is not None
+        }
+    )
 
     users_usage = defaultdict(int)
     for node_id, params in api_params.items():

@@ -11,6 +11,7 @@ import { Header } from "components/Header";
 import { HostsDialog } from "components/HostsDialog";
 import { NodesDialog } from "components/NodesModal";
 import { NodesUsage } from "components/NodesUsage";
+import { NodesRealtime } from "components/NodesRealtime";
 import { QRCodeDialog } from "components/QRCodeDialog";
 import { ResetAllUsageModal } from "components/ResetAllUsageModal";
 import { SyncInboundsModal } from "components/SyncInboundsModal";
@@ -41,6 +42,7 @@ export const Dashboard: FC = () => {
       <Box w="full">
         <Header />
         <Statistics mt="4" />
+        <NodesRealtime />
         <Filters />
         <UsersTable />
         <UserDialog />

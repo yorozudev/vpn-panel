@@ -1,3 +1,4 @@
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from enum import Enum
 from typing import Literal
@@ -155,6 +156,17 @@ class NodeResponse(Node):
         if isinstance(v[0], str):
             return v
         return [i.tag for i in v]
+
+
+class NodeRealtimeResponse(BaseModel):
+    node_id: int
+    online_users: int | None = None
+    cpu_percent: float | None = None
+    memory_percent: float | None = None
+    download_bytes_per_second: float | None = None
+    upload_bytes_per_second: float | None = None
+    measured_at: datetime | None = None
+    metrics_available: bool = False
 
 
 class NodeUsageResponse(BaseModel):

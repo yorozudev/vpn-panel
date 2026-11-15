@@ -300,6 +300,13 @@ NODE_USER_USAGE_CLEANUP_BATCH_SIZE = config("NODE_USER_USAGE_CLEANUP_BATCH_SIZE"
 # теряла бы день истории безвозвратно — запись снимка идемпотентна в пределах
 # суток, поэтому лишние проходы ничего не стоят (NPVPN-2072).
 JOB_SNAPSHOT_HOST_COMPOSITION_INTERVAL = config("JOB_SNAPSHOT_HOST_COMPOSITION_INTERVAL", cast=int, default=3600)
+JOB_NODE_REALTIME_INTERVAL = config("JOB_NODE_REALTIME_INTERVAL", cast=int, default=15)
+REALTIME_REDIS_URL = config("REALTIME_REDIS_URL", default="redis://127.0.0.1:6379/0")
+REALTIME_ONLINE_TTL = config("REALTIME_ONLINE_TTL", cast=int, default=45)
+REALTIME_SYSTEM_TTL = config("REALTIME_SYSTEM_TTL", cast=int, default=60)
+REALTIME_METRICS_CONCURRENCY = config("REALTIME_METRICS_CONCURRENCY", cast=int, default=5)
+NODE_EXPORTER_PORT = config("NODE_EXPORTER_PORT", cast=int, default=9100)
+NODE_EXPORTER_TIMEOUT = config("NODE_EXPORTER_TIMEOUT", cast=float, default=4)
 
 # review job: пороги для диагностического лога [review][on_hold][slow] (секунды)
 SLOW_USER_TOTAL_THRESHOLD = config("SLOW_USER_TOTAL_THRESHOLD", cast=float, default=1.0)
