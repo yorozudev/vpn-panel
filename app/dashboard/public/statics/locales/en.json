@@ -272,7 +272,7 @@
   "userDialog.dataLimit": "Data Limit",
   "userDialog.bsDataLimit": "Additional white list traffic",
   "userDialog.bsMonthlyLimit": "Personal monthly white list limit",
-  "userDialog.bsMonthlyLimitHint": "Empty — global limit, 0 — white list access disabled",
+  "userDialog.bsMonthlyLimitHint": "Empty — global limit, 0 — disabled; extra traffic is added for the current month",
   "userDialog.deviceLimit": "Device Limit",
   "userDialog.devicesButton": "Devices",
   "userDialog.devicesTitle": "Devices",

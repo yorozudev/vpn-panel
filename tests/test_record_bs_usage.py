@@ -863,7 +863,7 @@ def test_update_user_clears_next_plan_only_when_explicitly_null(db):
 
 
 @pytest.mark.parametrize("global_limit,personal_limit", [(3 * GB, GB), (3 * GB, 8 * GB), (0, 2 * GB)])
-def test_personal_bs_limit_overrides_global_and_pool(db, global_limit, personal_limit):
+def test_personal_bs_limit_replaces_global_base_and_adds_pool(db, global_limit, personal_limit):
     from app.db import crud
 
     now = period_keys(datetime.utcnow())
@@ -876,15 +876,15 @@ def test_personal_bs_limit_overrides_global_and_pool(db, global_limit, personal_
     db.expire_all()
 
     dbuser = db.query(User).filter(User.id == USER_ID).one()
-    assert dbuser.bs_monthly_limit_total == personal_limit
-    assert dbuser.bs_extra_effective == 0
+    assert dbuser.bs_monthly_limit_total == personal_limit + 20 * GB
+    assert dbuser.bs_extra_effective == 20 * GB
     assert crud.get_bs_state(db, dbuser) == {
         "monthly_used": GB,
         "monthly_limit": personal_limit,
-        "pool": 0,
-        "limit_total": personal_limit,
+        "pool": 20 * GB,
+        "limit_total": personal_limit + 20 * GB,
     }
-    assert dbuser.bs_extra == 20 * GB  # сохранён для возврата в глобальный режим
+    assert dbuser.bs_extra == 20 * GB
 
 
 def test_personal_bs_limit_zero_is_real_effective_limit(db):
@@ -921,35 +921,33 @@ def test_update_user_personal_bs_limit_omitted_set_and_clear(db):
     assert user.bs_extra == 2 * GB
 
 
-def test_update_user_rejects_personal_limit_with_pool_change(db):
+def test_update_user_allows_personal_limit_with_pool_change(db):
     from app.db import crud
     from app.models.user import UserModify
 
     user = _bot_with_limit(db, 3 * GB)
     db.commit()
 
-    with pytest.raises(ValueError, match="персональный БС-лимит"):
-        crud.update_user(db, user, UserModify(proxies={}, bs_monthly_limit=GB, bs_extra=GB))
+    crud.update_user(db, user, UserModify(proxies={}, bs_monthly_limit=GB, bs_extra=2 * GB))
+    db.expire_all()
+    user = db.query(User).filter(User.id == USER_ID).one()
+    assert user.bs_monthly_limit == GB
+    assert user.bs_extra == 2 * GB
+    assert user.bs_monthly_limit_total == 3 * GB
 
 
-def test_personal_bs_subscription_suffix_does_not_touch_pool(db, monkeypatch):
-    from app.db import crud
+def test_personal_bs_subscription_suffix_includes_pool(db):
     from app.subscription.bs_context_builder import load_bs_usage_suffix
 
     now = period_keys(datetime.utcnow())
     user = _bot_with_limit(db, 3 * GB)
     user.bs_monthly_limit = 5 * GB
-    user.bs_extra = 20 * GB
+    user.bs_extra = 2 * GB
     user.bs_extra_period = now
-    db.add(NodeUserBsUsage(user_id=USER_ID, node_id=NODE_ID, monthly_used=GB, monthly_period=now))
+    db.add(NodeUserBsUsage(user_id=USER_ID, node_id=NODE_ID, monthly_used=6 * GB, monthly_period=now))
     db.commit()
-    monkeypatch.setattr(
-        crud,
-        "normalize_bs_extra_period",
-        lambda *args, **kwargs: pytest.fail("Персональный override не должен нормализовать пул"),
-    )
 
-    assert load_bs_usage_suffix(db, USER_ID, 3 * GB, 5 * GB) == " - (1/5 ГБ)"
+    assert load_bs_usage_suffix(db, USER_ID, 3 * GB, 5 * GB) == " - (6/7 ГБ)"
 
 
 def test_review_bs_nodes_blocks_zero_override_without_usage(db, monkeypatch):
@@ -975,7 +973,7 @@ def test_review_bs_nodes_blocks_zero_override_without_usage(db, monkeypatch):
     assert [(block.node_id, block.period) for block in blocks] == [(NODE_ID, "agg")]
 
 
-def test_review_bs_nodes_uses_exact_positive_override(db, monkeypatch):
+def test_review_bs_nodes_adds_pool_to_positive_override(db, monkeypatch):
     from contextlib import nullcontext
 
     from app.db.models import NodeUserBlock
@@ -986,7 +984,7 @@ def test_review_bs_nodes_uses_exact_positive_override(db, monkeypatch):
     user.bs_monthly_limit = 2 * GB
     user.bs_extra = 100 * GB
     user.bs_extra_period = now
-    db.add(NodeUserBsUsage(user_id=USER_ID, node_id=NODE_ID, monthly_used=2 * GB, monthly_period=now))
+    db.add(NodeUserBsUsage(user_id=USER_ID, node_id=NODE_ID, monthly_used=102 * GB, monthly_period=now))
     db.commit()
     monkeypatch.setattr(review_bs_nodes, "GetDB", lambda: nullcontext(db))
     monkeypatch.setattr(
@@ -1021,3 +1019,77 @@ def test_create_user_saves_personal_bs_limit(db, monkeypatch):
     )
     dbuser = crud.create_user(db, created)
     assert dbuser.bs_monthly_limit == 7 * GB
+
+
+def test_personal_bs_pool_is_not_carried_to_next_month(db):
+    from app.db import crud
+
+    user = _bot_with_limit(db, 100 * GB)
+    user.bs_monthly_limit = 5 * GB
+    user.bs_extra = 2 * GB
+    user.bs_extra_period = "2000-01"
+    db.commit()
+    db.expire_all()
+
+    dbuser = db.query(User).filter(User.id == USER_ID).one()
+    assert dbuser.bs_monthly_limit_total == 5 * GB
+    assert dbuser.bs_extra_effective == 0
+    assert crud.normalize_bs_extra_period(
+        db,
+        USER_ID,
+        5 * GB,
+        period_keys(datetime.utcnow()),
+        persist=True,
+    ) == 0
+    db.expire_all()
+    assert db.query(User).filter(User.id == USER_ID).one().bs_extra == 0
+
+
+def test_personal_bs_pool_always_resets_on_prolong(db):
+    from app.db import crud
+
+    user = _bot_with_limit(db, 3 * GB)
+    user.bs_monthly_limit = 5 * GB
+    user.bs_extra = 2 * GB
+    db.commit()
+
+    crud.modify_user_bs_extra(db, user, reset=True)
+    db.expire_all()
+    user = db.query(User).filter(User.id == USER_ID).one()
+    assert user.bs_monthly_limit == 5 * GB
+    assert user.bs_extra == 0
+
+
+def test_personal_bs_pool_can_be_purchased_with_global_zero(db):
+    from app.db import crud
+    from app.models.user import UserModify
+
+    user = _bot_with_limit(db, 0)
+    user.bs_monthly_limit = 5 * GB
+    db.commit()
+
+    crud.update_user(db, user, UserModify(proxies={}, bs_extra=2 * GB))
+    db.expire_all()
+    user = db.query(User).filter(User.id == USER_ID).one()
+    assert user.bs_extra == 2 * GB
+    assert user.bs_monthly_limit_total == 7 * GB
+
+
+def test_review_bs_nodes_does_not_block_base_usage_when_pool_available(db, monkeypatch):
+    from contextlib import nullcontext
+
+    from app.db.models import NodeUserBlock
+    from app.jobs import review_bs_nodes
+
+    now = period_keys(datetime.utcnow())
+    user = _bot_with_limit(db, 100 * GB)
+    user.bs_monthly_limit = 2 * GB
+    user.bs_extra = 100 * GB
+    user.bs_extra_period = now
+    db.add(NodeUserBsUsage(user_id=USER_ID, node_id=NODE_ID, monthly_used=2 * GB, monthly_period=now))
+    db.commit()
+    monkeypatch.setattr(review_bs_nodes, "GetDB", lambda: nullcontext(db))
+
+    review_bs_nodes.review_bs_nodes()
+
+    assert db.query(NodeUserBlock).filter(NodeUserBlock.user_id == USER_ID).count() == 0

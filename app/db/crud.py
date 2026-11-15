@@ -938,10 +938,8 @@ def update_user(db: Session, dbuser: User, modify: UserModify) -> User:
     """
     if modify.bs_extra is not None and modify.bs_limit_total is not None:
         raise ValueError("Нельзя задать bs_extra и bs_limit_total одновременно")
-    if "bs_monthly_limit" in modify.model_fields_set and (
-        modify.bs_extra is not None or modify.bs_limit_total is not None
-    ):
-        raise ValueError("Нельзя менять персональный БС-лимит вместе с bs_extra или bs_limit_total")
+    if "bs_monthly_limit" in modify.model_fields_set and modify.bs_limit_total is not None:
+        raise ValueError("Нельзя менять персональный БС-лимит вместе с bs_limit_total")
 
     added_proxies: dict[ProxyTypes, Proxy] = {}
     if modify.proxies:
@@ -2343,7 +2341,7 @@ def normalize_bs_extra_period(db: Session, user_id: int, monthly_limit: int, yyy
     """
     from app.xray.bs_limit import carry_over_pool
 
-    stmt = select(User.bs_extra, User.bs_extra_period).where(User.id == user_id)
+    stmt = select(User.bs_extra, User.bs_extra_period, User.bs_monthly_limit).where(User.id == user_id)
     if persist:
         stmt = stmt.with_for_update()
     row = db.execute(stmt).first()
@@ -2356,7 +2354,11 @@ def normalize_bs_extra_period(db: Session, user_id: int, monthly_limit: int, yyy
     if not period or period >= yyyymm:
         return pool
 
-    new_pool = carry_over_pool(pool, get_bs_usage_totals_stale(db, user_id, yyyymm, period), monthly_limit)
+    new_pool = (
+        0
+        if row.bs_monthly_limit is not None
+        else carry_over_pool(pool, get_bs_usage_totals_stale(db, user_id, yyyymm, period), monthly_limit)
+    )
     if persist:
         db.execute(update(User).where(User.id == user_id).values(bs_extra=new_pool, bs_extra_period=yyyymm))
     return new_pool
@@ -2370,17 +2372,11 @@ def get_bs_state(db: Session, dbuser: User) -> dict[str, int]:
     user_id = cast(int, dbuser.id)
     yyyymm = period_keys(datetime.utcnow())
     monthly_used = get_bs_usage_totals(db, user_id, yyyymm)
-    if dbuser.bs_monthly_limit is not None:
-        # Персональный override не зависит от глобальной настройки и не расходует пул.
-        personal_limit = int(dbuser.bs_monthly_limit)
-        return {
-            "monthly_used": monthly_used,
-            "monthly_limit": personal_limit,
-            "pool": 0,
-            "limit_total": personal_limit,
-        }
-
-    monthly_limit = get_bs_monthly_limit(db)
+    monthly_limit = (
+        int(dbuser.bs_monthly_limit)
+        if dbuser.bs_monthly_limit is not None
+        else get_bs_monthly_limit(db)
+    )
     pool = normalize_bs_extra_period(db, user_id, monthly_limit, yyyymm, persist=False)
     return {
         "monthly_used": monthly_used,
@@ -2416,11 +2412,15 @@ def set_user_bs_extra_amount(db: Session, dbuser: User, extra_bytes: int) -> Non
     from app.xray.bs_limit import period_keys
 
     user_id = cast(int, dbuser.id)
-    monthly_limit = get_bs_monthly_limit(db)
+    monthly_limit = (
+        int(dbuser.bs_monthly_limit)
+        if dbuser.bs_monthly_limit is not None
+        else get_bs_monthly_limit(db)
+    )
     yyyymm = period_keys(datetime.utcnow())
     if not monthly_limit:
         if extra_bytes:
-            raise ValueError("Месячный лимит БС в настройках панели не задан (0)")
+            raise ValueError("БС-лимит пользователя не задан или запрещён (0)")
         new_extra = 0
     else:
         normalize_bs_extra_period(db, user_id, monthly_limit, yyyymm, persist=True)
@@ -2435,11 +2435,15 @@ def set_user_bs_limit_total(db: Session, dbuser: User, limit_total: int) -> None
     from app.xray.bs_limit import period_keys
 
     user_id = cast(int, dbuser.id)
-    monthly_limit = get_bs_monthly_limit(db)
+    monthly_limit = (
+        int(dbuser.bs_monthly_limit)
+        if dbuser.bs_monthly_limit is not None
+        else get_bs_monthly_limit(db)
+    )
     yyyymm = period_keys(datetime.utcnow())
     if not monthly_limit:
         if limit_total:
-            raise ValueError("Месячный лимит БС в настройках панели не задан (0)")
+            raise ValueError("БС-лимит пользователя не задан или запрещён (0)")
         new_extra = 0
     else:
         normalize_bs_extra_period(db, user_id, monthly_limit, yyyymm, persist=True)
@@ -2468,6 +2472,10 @@ def modify_user_bs_extra(db: Session, dbuser: User, *, delta_bytes: int | None =
     from app.xray.bs_limit import period_keys
 
     if reset:
+        # Докупка к персональному месячному тарифу одноразовая и при продлении
+        # всегда сбрасывается. Для глобального режима сохраняется прежняя настройка.
+        if dbuser.bs_monthly_limit is not None:
+            return reset_user_bs_extra_pool(db, dbuser)
         settings = _bot_settings_for_user(db, dbuser)
         if not settings.get("bs_extra_reset_pool_on_prolong", False):
             return dbuser
@@ -2475,7 +2483,11 @@ def modify_user_bs_extra(db: Session, dbuser: User, *, delta_bytes: int | None =
     elif delta_bytes is not None:
         from app.services.panel_settings import get_bs_monthly_limit
 
-        monthly_limit = get_bs_monthly_limit(db)
+        monthly_limit = (
+            int(dbuser.bs_monthly_limit)
+            if dbuser.bs_monthly_limit is not None
+            else get_bs_monthly_limit(db)
+        )
         yyyymm = period_keys(datetime.utcnow())
         # Сначала перенос за прошлый месяц, потом покупка — иначе докупка легла бы
         # поверх ещё не пересчитанного пула.

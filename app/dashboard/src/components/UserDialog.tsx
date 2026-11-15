@@ -125,7 +125,7 @@ const formatUser = (user: User): FormType => {
         ? null
         : Number((user.bs_monthly_limit / GIB).toFixed(5)),
     bs_extra:
-      user.bs_monthly_limit == null &&
+      user.bs_monthly_limit !== 0 &&
       user.bs_monthly_limit_total != null && user.bs_monthly_limit_total > 0
         ? Number(((user.bs_extra_effective ?? 0) / GIB).toFixed(5))
         : null,
@@ -390,13 +390,12 @@ export const UserDialog: FC<UserDialogProps> = () => {
           ? values.status
           : "active",
     };
-    // В глобальном режиме не шлём null вместе с bs_extra: это независимые операции.
-    // null отправляем только для очистки ранее заданного персонального override.
+    // В глобальном режиме не шлём лишний null. null нужен только для очистки override.
     if (!isEditing || bs_monthly_limit != null || editingUser?.bs_monthly_limit != null) {
       body.bs_monthly_limit = bs_monthly_limit ?? null;
     }
     if (
-      bs_monthly_limit == null &&
+      (bs_monthly_limit == null || bs_monthly_limit > 0) &&
       isEditing &&
       shouldSubmitBsExtra(bs_extra, bs_extra_dirty)
     ) {
@@ -728,7 +727,7 @@ export const UserDialog: FC<UserDialogProps> = () => {
                             {t("userDialog.bsMonthlyLimitHint")}
                           </FormHelperText>
                         </FormControl>
-                        {bsMonthlyLimit == null &&
+                        {(bsMonthlyLimit == null || bsMonthlyLimit > 0) &&
                           isEditing &&
                           editingUser?.bs_monthly_limit_total != null &&
                           editingUser.bs_monthly_limit_total > 0 && (

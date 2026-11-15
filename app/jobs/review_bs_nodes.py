@@ -20,7 +20,6 @@ from app.xray.bs_limit import (
     aggregate_bs_usage,
     carry_over_pool,
     diff_blocks,
-    over_limit,
     over_limit_monthly_pool,
     period_keys,
 )
@@ -32,7 +31,7 @@ def _stale_used_since(rows, since):
     return sum(used for period, used in rows if period >= since)
 
 
-def _effective_pool(bs_extra, extra_period, yyyymm, stale_rows, monthly_limit):
+def _effective_pool(bs_extra, extra_period, yyyymm, stale_rows, monthly_limit, personal_limit=None):
     """Купленный пул, приведённый к текущему месяцу, — батчевый аналог нормализации.
 
     Не через crud.normalize_bs_extra_period: тут разом проверяются все пользователи с
@@ -46,6 +45,8 @@ def _effective_pool(bs_extra, extra_period, yyyymm, stale_rows, monthly_limit):
     # потолок, а сводка API и бар подписки в тот же момент покажут юзеру остаток.
     if not extra_period or extra_period >= yyyymm:
         return bs_extra
+    if personal_limit is not None:
+        return 0
     return carry_over_pool(bs_extra, _stale_used_since(stale_rows, extra_period), monthly_limit)
 
 
@@ -126,13 +127,20 @@ def review_bs_nodes():
         for uid in user_ids:
             personal_limit, bs_extra, extra_period = user_info.get(uid, (None, 0, None))
             monthly_used = totals.get(uid, 0)
-            if personal_limit is not None:
-                # В отличие от глобального 0 (лимит не задан), персональный 0 — запрет.
-                if personal_limit == 0 or over_limit(monthly_used, personal_limit):
-                    over_users.add(uid)
+            # В отличие от глобального 0 (лимит не задан), персональный 0 — запрет.
+            if personal_limit == 0:
+                over_users.add(uid)
                 continue
-            pool = _effective_pool(bs_extra, extra_period, yyyymm, stale.get(uid, []), monthly_limit)
-            if over_limit_monthly_pool(monthly_used, monthly_limit, pool):
+            base_limit = personal_limit if personal_limit is not None else monthly_limit
+            pool = _effective_pool(
+                bs_extra,
+                extra_period,
+                yyyymm,
+                stale.get(uid, []),
+                base_limit,
+                personal_limit,
+            )
+            if over_limit_monthly_pool(monthly_used, base_limit, pool):
                 over_users.add(uid)
 
         desired = {(nid, uid) for uid in over_users for nid in bs_node_ids}

@@ -73,7 +73,7 @@ class User(BaseModel):
     bs_monthly_limit: int | None = Field(
         default=None,
         ge=0,
-        description="Персональный месячный БС-лимит: null — глобальный, 0 — запрет, N — точный лимит",
+        description="Базовый персональный месячный БС-лимит: null — глобальный, 0 — запрет; bs_extra прибавляется",
     )
     bs_extra: int | None = Field(
         default=None, ge=0, description="Доступный сверх базы БС-трафик в текущем месяце (байты)"

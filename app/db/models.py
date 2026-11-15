@@ -225,7 +225,7 @@ class User(Base):
     legacy_vless_enabled = Column(Boolean, nullable=False, default=True, server_default=text("1"))
     legacy_vless_last_activity_at = Column(DateTime, nullable=True, default=None)
     legacy_vless_disabled_at = Column(DateTime, nullable=True, default=None)
-    # NULL = глобальный лимит + bs_extra; 0 = БС запрещён; N > 0 = точный лимит.
+    # NULL = глобальная база; 0 = БС запрещён; N > 0 = персональная база + bs_extra.
     bs_monthly_limit = Column(BigInteger, nullable=True, default=None)
     bs_extra = Column(BigInteger, nullable=True, default=None)
     bs_extra_period = Column(String(7), nullable=True, default=None)
@@ -280,16 +280,14 @@ class User(Base):
         чтобы список пользователей не ходил в БД дважды, а смена месяца на живом
         объекте не отдавала вчерашний пересчёт.
         """
-        if self.bs_monthly_limit is not None:
-            return None
-
         from sqlalchemy.orm import object_session
 
         from app.services.panel_settings import get_bs_monthly_limit
         from app.xray.bs_limit import carry_over_pool, period_keys
 
         db = object_session(self)
-        monthly_limit = get_bs_monthly_limit(db)
+        personal_limit = self.bs_monthly_limit
+        monthly_limit = int(personal_limit) if personal_limit is not None else get_bs_monthly_limit(db)
         if not monthly_limit:
             return None
 
@@ -305,20 +303,24 @@ class User(Base):
         # Без сессии (detached-объект) агрегат не достать — отдаём заведомо
         # ненормализованный пул: если период отстал, потолок будет завышен до
         # ближайшего тика джобы учёта.
-        if db is not None and period and period < yyyymm:
-            from app.db.crud import get_bs_usage_totals_stale
+        if period and period < yyyymm:
+            if personal_limit is not None:
+                # Докупка к персональному тарифу действует только в текущем месяце.
+                pool = 0
+            elif db is not None:
+                from app.db.crud import get_bs_usage_totals_stale
 
-            stale_used = get_bs_usage_totals_stale(db, cast(int, self.id), yyyymm, period)
-            pool = carry_over_pool(pool, stale_used, monthly_limit)
+                stale_used = get_bs_usage_totals_stale(db, cast(int, self.id), yyyymm, period)
+                pool = carry_over_pool(pool, stale_used, monthly_limit)
         state = (monthly_limit, pool)
         self.__dict__["_bs_pool_state_cache"] = (cache_key, state)
         return state
 
     @property
     def bs_monthly_limit_total(self) -> int | None:
-        """Персональный потолок либо лимит панели + пул; None, если лимит не задан."""
-        if self.bs_monthly_limit is not None:
-            return int(self.bs_monthly_limit)
+        """(Персональная либо глобальная база) + действующий пул; None, если лимит не задан."""
+        if self.bs_monthly_limit == 0:
+            return 0
 
         from app.xray.bs_limit import monthly_effective_limit
 
