@@ -983,6 +983,14 @@ def update_user(db: Session, dbuser: User, modify: UserModify) -> User:
     if modify.device_limit is not None:
         dbuser.device_limit = modify.device_limit or None
 
+    if "legacy_vless_enabled" in modify.model_fields_set and modify.legacy_vless_enabled is not None:
+        dbuser.legacy_vless_enabled = modify.legacy_vless_enabled
+        dbuser.legacy_vless_disabled_at = None if modify.legacy_vless_enabled else datetime.utcnow()
+        if modify.legacy_vless_enabled:
+            # Rollback не будет немедленно отменён следующим проходом джобы.
+            dbuser.legacy_vless_last_activity_at = datetime.utcnow()
+        # Повторное автоматическое отключение возможно только после grace period.
+
     if modify.expire is not None:
         dbuser.expire = modify.expire or None
         if dbuser.status in (UserStatus.active, UserStatus.expired):

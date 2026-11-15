@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import types
+from contextlib import nullcontext
 from datetime import datetime
 from unittest.mock import Mock
 from uuid import UUID, uuid4
@@ -112,6 +113,26 @@ def test_xray_stats_keep_device_identity_and_aggregate_directions():
     ]
 
 
+def test_legacy_activity_ignores_per_device_only_traffic(db, monkeypatch):
+    from app.jobs import record_usages
+
+    monkeypatch.setattr(record_usages, "GetDB", lambda: nullcontext(db))
+    record_usages.record_legacy_activity({1: [{"uid": "42", "device_id": 101, "value": 100}]})
+    dbuser = db.query(User).filter(User.id == 42).one()
+    assert dbuser.legacy_vless_last_activity_at is None
+
+    record_usages.record_legacy_activity(
+        {
+            1: [
+                {"uid": "42", "device_id": 101, "value": 100},
+                {"uid": "42", "device_id": None, "value": 50},
+            ]
+        }
+    )
+    db.refresh(dbuser)
+    assert dbuser.legacy_vless_last_activity_at is not None
+
+
 def test_online_counts_users_devices_and_legacy_separately():
     params = [
         {"uid": "42", "device_id": 101, "value": 10},
@@ -134,9 +155,14 @@ def test_three_devices_get_stable_distinct_uuids_and_pass_limit(db, add_device):
     assert add_device.call_count == 3
     assert count_user_devices(db, db.query(User).filter(User.id == 42).one()) == 3
 
-    # Повторное обновление той же подписки не меняет UUID и не добавляет клиента.
+    # Повторное обновление той же подписки не меняет UUID, не добавляет клиента
+    # и не сдвигает первую выдачу, от которой считается migration grace period.
+    dbuser = db.query(User).filter(User.id == 42).one()
+    first_delivery = get_user_device_by_hwid(db, dbuser, "hwid-0").vless_config_delivered_at
+    assert first_delivery is not None
     again = resolve(db, add_device, "hwid-0")
     assert again[0].proxies["vless"].id == device_ids[0]
+    assert get_user_device_by_hwid(db, dbuser, "hwid-0").vless_config_delivered_at == first_delivery
     assert add_device.call_count == 3
     assert all(result[2:] == (False, False, False) for result in [*results, again])
 
@@ -187,6 +213,16 @@ def test_unknown_device_keeps_legacy_behavior(db, add_device):
     add_device.assert_not_called()
 
 
+def test_no_hwid_gets_empty_subscription_after_legacy_disable(db, add_device):
+    dbuser = db.query(User).filter(User.id == 42).one()
+    dbuser.legacy_vless_enabled = False
+    db.commit()
+    user, _, limited, limited_hard, unsupported = resolve(db, add_device, None)
+    assert (limited, limited_hard, unsupported) == (False, False, True)
+    assert user.proxies == {}
+    add_device.assert_not_called()
+
+
 def test_startup_config_restores_active_devices_and_skips_revoked(db, monkeypatch):
     import app.xray.config as config_module
     from app.xray.config import XRayConfig
@@ -202,7 +238,7 @@ def test_startup_config_restores_active_devices_and_skips_revoked(db, monkeypatc
         ]
     )
     db.commit()
-    monkeypatch.setattr(config_module, "GetDB", lambda: db)
+    monkeypatch.setattr(config_module, "GetDB", lambda: nullcontext(db))
     config = XRayConfig(
         {
             "inbounds": [
@@ -227,6 +263,48 @@ def test_startup_config_restores_active_devices_and_skips_revoked(db, monkeypatc
     assert active_devices[0]["email"] == device_email(42, active_device.id, "device_user")
     assert active_devices[0]["id"] == str(active_id)
     assert str(revoked_id) not in {client["id"] for client in clients}
+
+    # Per-user disable убирает только legacy; device identity переживает restart.
+    dbuser = db.query(User).filter(User.id == 42).one()
+    dbuser.legacy_vless_enabled = False
+    db.commit()
+    migrated_clients = config.include_db_users().get_inbound("VLESS_TCP_REALITY")["settings"]["clients"]
+    assert "42.device_user" not in {client["email"] for client in migrated_clients}
+    assert active_device.id in {
+        parse_xray_identity(client["email"])[1] for client in migrated_clients
+    }
+
+
+def test_migration_job_disables_ready_user_and_removes_only_legacy(db, monkeypatch):
+    from datetime import timedelta
+
+    from app.jobs import migrate_legacy_credentials as migration_job
+
+    db.add(
+        UserDevice(
+            user_id=42,
+            hwid="ready",
+            status="active",
+            vless_uuid=str(uuid4()),
+            vless_config_delivered_at=datetime.utcnow() - timedelta(days=8),
+        )
+    )
+    db.commit()
+    remove_legacy = Mock()
+    monkeypatch.setattr(
+        migration_job.xray,
+        "operations",
+        types.SimpleNamespace(remove_legacy_vless=remove_legacy),
+        raising=False,
+    )
+    monkeypatch.setattr(migration_job, "GetDB", lambda: nullcontext(db))
+
+    migration_job.migrate_legacy_credentials()
+
+    dbuser = db.query(User).filter(User.id == 42).one()
+    assert dbuser.legacy_vless_enabled is False
+    assert dbuser.legacy_vless_disabled_at is not None
+    remove_legacy.assert_called_once()
 
 
 def test_live_xray_add_and_revoke_use_device_identity(db, monkeypatch):

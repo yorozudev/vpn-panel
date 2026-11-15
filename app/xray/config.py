@@ -343,6 +343,7 @@ class XRayConfig(dict):
                 db.query(
                     db_models.User.id,
                     db_models.User.username,
+                    db_models.User.legacy_vless_enabled,
                     func.lower(db_models.Proxy.type).label("type"),
                     db_models.Proxy.settings,
                     func.group_concat(db_models.excluded_inbounds_association.c.inbound_tag).label(
@@ -359,6 +360,7 @@ class XRayConfig(dict):
                     func.lower(db_models.Proxy.type),
                     db_models.User.id,
                     db_models.User.username,
+                    db_models.User.legacy_vless_enabled,
                     db_models.Proxy.settings,
                 )
             )
@@ -388,6 +390,7 @@ class XRayConfig(dict):
                     (
                         row.id,
                         row.username,
+                        row.legacy_vless_enabled,
                         row.settings,
                         [i for i in row.excluded_inbound_tags.split(",") if i] if row.excluded_inbound_tags else None,
                     )
@@ -402,25 +405,26 @@ class XRayConfig(dict):
                     clients = config.get_inbound(inbound["tag"])["settings"]["clients"]
 
                     for row in rows:
-                        user_id, username, settings, excluded_inbound_tags = row
+                        user_id, username, legacy_enabled, settings, excluded_inbound_tags = row
 
                         if excluded_inbound_tags and inbound["tag"] in excluded_inbound_tags:
                             continue
 
-                        client = {"email": f"{user_id}.{username}", **settings}
+                        if proxy_type != "vless" or legacy_enabled:
+                            client = {"email": f"{user_id}.{username}", **settings}
 
-                        # XTLS currently only supports transmission methods of TCP and mKCP
-                        if client.get("flow") and (
-                            inbound.get("network", "tcp") not in ("tcp", "raw", "kcp")
-                            or (
-                                inbound.get("network", "tcp") in ("tcp", "raw", "kcp")
-                                and inbound.get("tls") not in ("tls", "reality")
-                            )
-                            or inbound.get("header_type") == "http"
-                        ):
-                            del client["flow"]
+                            # XTLS currently only supports transmission methods of TCP and mKCP
+                            if client.get("flow") and (
+                                inbound.get("network", "tcp") not in ("tcp", "raw", "kcp")
+                                or (
+                                    inbound.get("network", "tcp") in ("tcp", "raw", "kcp")
+                                    and inbound.get("tls") not in ("tls", "reality")
+                                )
+                                or inbound.get("header_type") == "http"
+                            ):
+                                del client["flow"]
 
-                        clients.append(client)
+                            clients.append(client)
 
                         if proxy_type == "vless":
                             for device_id, device_uuid in devices_by_user.get(user_id, []):

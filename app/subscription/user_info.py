@@ -73,6 +73,11 @@ def _apply_device_vless_credential(
         from app import xray
 
         xray.operations.add_device(dbuser, dbdevice)
+    if dbdevice.vless_config_delivered_at is None:
+        # Фиксируем первую выдачу, а не hourly refresh: иначе grace period никогда
+        # не закончится у регулярно обновляющих подписку клиентов.
+        dbdevice.vless_config_delivered_at = datetime.utcnow()
+        db.commit()
     device_proxy = vless_proxy.model_copy(update={"id": UUID(credential)})
     return user.model_copy(
         update={"proxies": {**user.proxies, ProxyTypes.VLESS: device_proxy}}
@@ -115,6 +120,14 @@ def resolve_device_limit_subscription_state(
         if registered:
             dbdevice = crud.get_user_device_by_hwid(db, dbuser, x_hwid or crud.UNKNOWN_DEVICE_HWID)
         within_limit = crud.is_device_within_limit(db, dbuser, dbdevice)
+        if (
+            dbdevice is not None
+            and dbdevice.hwid == crud.UNKNOWN_DEVICE_HWID
+            and not getattr(dbuser, "legacy_vless_enabled", True)
+        ):
+            # После отключения legacy нельзя выдавать клиенту заведомо нерабочий
+            # общий UUID. Нужен Happ/HWID либо ручной rollback администратора.
+            unsupported_client = True
         if registered and within_limit and not unsupported_client and dbdevice is not None:
             user = _apply_device_vless_credential(user, db, dbuser, dbdevice)
         over_limit = not unsupported_client and not within_limit

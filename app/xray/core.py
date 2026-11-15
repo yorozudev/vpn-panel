@@ -83,8 +83,8 @@ class XRayCore:
             threading.Thread(target=capture_only).start()
 
     @contextmanager
-    def get_logs(self):
-        buf = deque(self._logs_buffer, maxlen=100)
+    def get_logs(self, maxlen: int = 100):
+        buf = deque(self._logs_buffer, maxlen=maxlen)
         buf_id = id(buf)
         try:
             self._temp_log_buffers[buf_id] = buf

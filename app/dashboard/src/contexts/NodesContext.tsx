@@ -125,6 +125,8 @@ export const NodeRealtimeSchema = z.object({
   online_users: z.number().nullable(),
   online_devices: z.number().nullable(),
   legacy_online_users: z.number().nullable(),
+  unattributed_users: z.number().nullable(),
+  unattributed_devices: z.number().nullable(),
   cpu_percent: z.number().nullable(),
   memory_percent: z.number().nullable(),
   download_bytes_per_second: z.number().nullable(),

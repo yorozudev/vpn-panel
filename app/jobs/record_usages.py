@@ -13,10 +13,12 @@ from sqlalchemy.sql.dml import Insert
 from app import logger, scheduler, xray
 from app.db import GetDB, crud
 from app.db.models import Admin, BotBsDaily, Node, NodeUsage, NodeUserBsUsage, NodeUserUsage, System, User
-from app.services.node_realtime import set_nodes_online
+from app.services.entry_routes import collect_entry_routes
+from app.services.node_realtime import get_route_observations, set_nodes_online
 from app.utils.concurrency import get_xray_executor
 from app.xray.bs_limit import bs_counter_step, period_keys
-from app.xray.device_credentials import online_counts, parse_xray_identity
+from app.xray.device_credentials import parse_xray_identity
+from app.xray.route_online import build_routed_online_counts, identity_of
 from config import (
     DISABLE_RECORDING_NODE_USAGE,
     DISABLE_RECORDING_NODE_USER_USAGE,
@@ -305,6 +307,27 @@ def get_users_stats(api: XRayAPI):
         return []
 
 
+def record_legacy_activity(api_params: dict) -> None:
+    """Запомнить последний фактический трафик общего UUID для safe migration."""
+    user_ids = {
+        int(param["uid"])
+        for params in api_params.values()
+        for param in params
+        if param.get("device_id") is None and str(param["uid"]).isdigit() and param.get("value", 0) > 0
+    }
+    if not user_ids:
+        return
+    try:
+        with GetDB() as db:
+            db.query(User).filter(User.id.in_(user_ids)).update(
+                {User.legacy_vless_last_activity_at: datetime.utcnow()},
+                synchronize_session=False,
+            )
+            db.commit()
+    except Exception as exc:
+        logger.warning("[device-migration] failed to record legacy activity: %s", exc)
+
+
 def get_outbounds_stats(api: XRayAPI):
     try:
         params = [
@@ -338,15 +361,22 @@ def record_user_usages():
             api_params[node_id] = []
             failed_nodes.add(node_id)
 
+    record_legacy_activity(api_params)
+
     # Тот же ответ Xray используем для realtime online: никаких дополнительных
-    # обращений к нодам или SQL. None отличает ошибку сбора от настоящего нуля.
-    set_nodes_online(
-        {
-            node_id: (None if node_id in failed_nodes else online_counts(params))
-            for node_id, params in api_params.items()
-            if node_id is not None
-        }
-    )
+    # обращений к Stats API. Access log Entry даёт только маршрут, активность —
+    # текущий stats snapshot, поэтому long-lived connections не теряются.
+    try:
+        entry_routes = collect_entry_routes()
+    except Exception as exc:
+        logger.warning("[realtime] failed to load cascade routes: %s", exc)
+        entry_routes = []
+    node_params = {node_id: params for node_id, params in api_params.items() if node_id is not None}
+    observations = {}
+    for entry_id in {route["entry_node_id"] for route in entry_routes}:
+        identities = {identity_of(param) for param in node_params.get(entry_id, [])}
+        observations.update(get_route_observations(entry_id, identities))
+    set_nodes_online(build_routed_online_counts(node_params, failed_nodes, entry_routes, observations))
 
     users_usage = defaultdict(int)
     for node_id, params in api_params.items():

@@ -542,9 +542,9 @@ class ReSTXRayNode:
             time.sleep(2)
 
     @contextmanager
-    def get_logs(self):
+    def get_logs(self, maxlen: int = 100):
         try:
-            buf = deque(maxlen=100)
+            buf = deque(maxlen=maxlen)
             self._logs_queues.append(buf)
 
             if not self._logs_bg_thread.is_alive():
@@ -724,7 +724,7 @@ class RPyCXRayNode:
         self.started = True
 
     @contextmanager
-    def get_logs(self):
+    def get_logs(self, maxlen: int = 100):
         if not self.connected:
             raise ConnectionError("Node is not connected")
 
@@ -734,7 +734,7 @@ class RPyCXRayNode:
             self.__curr_logs = 0
 
         try:
-            buf = deque(maxlen=100)
+            buf = deque(maxlen=maxlen)
 
             if self.__curr_logs <= 0:
                 self.__curr_logs = 1

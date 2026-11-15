@@ -151,6 +151,10 @@ def cascade_config(base_config, *, role, cascade_clients=None, entry_routes=None
 
     if role == "entry" and entry_routes:
         cfg = base_config.copy()
+        # Identity маршрута доступна только в access log Entry. Пишем в stdout,
+        # который панель уже получает через node.get_logs(); на Direct/Exit access
+        # logging не включаем и лишний объём логов там не создаём.
+        cfg["log"] = {**(cfg.get("log") or {}), "access": "", "error": "", "loglevel": "info"}
 
         # 1) outbounds: по одному на (exit, cascade_inbound), dedup по тегу.
         seen_outbounds = set()

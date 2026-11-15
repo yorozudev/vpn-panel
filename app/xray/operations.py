@@ -232,6 +232,18 @@ def remove_device(dbuser, dbdevice) -> None:
                 _remove_user_from_inbound(node.api, inbound_tag, email)
 
 
+def remove_legacy_vless(dbuser) -> None:
+    """Убрать только общий VLESS identity, сохранив все per-device UUID."""
+    email = f"{dbuser.id}.{dbuser.username}"
+    user = _user_response(dbuser)
+    ready_nodes = _get_ready_nodes()
+    for inbound_tag in user.inbounds.get(ProxyTypes.VLESS, []):
+        _remove_user_from_inbound(xray.api, inbound_tag, email)
+        for node in ready_nodes:
+            if _node_has_inbound(node, inbound_tag):
+                _remove_user_from_inbound(node.api, inbound_tag, email)
+
+
 def add_user(dbuser: "DBUser"):
     if dbuser is None:
         logger.warning("[xray.add_user] called with dbuser=None; skipping")
@@ -261,17 +273,25 @@ def add_user(dbuser: "DBUser"):
             ):
                 account.flow = XTLSFlows.NONE
 
-            _add_user_to_inbound(xray.api, inbound_tag, account)  # main core
+            accounts = [] if proxy_type == ProxyTypes.VLESS and not dbuser.legacy_vless_enabled else [account]
+            if proxy_type == ProxyTypes.VLESS:
+                accounts.extend(
+                    _device_account(user, dbuser, device, inbound)
+                    for device in _active_device_credentials(dbuser)
+                )
+            for identity_account in accounts:
+                _add_user_to_inbound(xray.api, inbound_tag, identity_account)  # main core
             for node in ready_nodes:
                 if not _node_has_inbound(node, inbound_tag):
                     continue
-                try:
-                    _add_user_to_inbound(node.api, inbound_tag, account)
-                except Exception as e:
-                    logger.warning(
-                        f'[xray.add_user] node call failed user="{dbuser.username}" '
-                        f'inbound="{inbound_tag}": {type(e).__name__}: {e}'
-                    )
+                for identity_account in accounts:
+                    try:
+                        _add_user_to_inbound(node.api, inbound_tag, identity_account)
+                    except Exception as e:
+                        logger.warning(
+                            f'[xray.add_user] node call failed user="{dbuser.username}" '
+                            f'inbound="{inbound_tag}": {type(e).__name__}: {e}'
+                        )
     logger.info(
         f"[xray.add_user] done email={email} nodes_ready={len(ready_nodes)} "
         f"nodes_total={total_nodes} dt={time.monotonic() - t0:.2f}s"
@@ -361,7 +381,10 @@ def update_user(dbuser: "DBUser"):
             ):
                 account.flow = XTLSFlows.NONE
 
-            accounts = [account]
+            legacy_disabled = proxy_type == ProxyTypes.VLESS and not dbuser.legacy_vless_enabled
+            accounts = [] if legacy_disabled else [account]
+            if legacy_disabled:
+                _remove_user_from_inbound(xray.api, inbound_tag, email)
             if proxy_type == ProxyTypes.VLESS:
                 accounts.extend(
                     _device_account(user, dbuser, device, inbound)
@@ -372,6 +395,8 @@ def update_user(dbuser: "DBUser"):
             for node in ready_nodes:
                 if not _node_has_inbound(node, inbound_tag):
                     continue
+                if legacy_disabled:
+                    _remove_user_from_inbound(node.api, inbound_tag, email)
                 for identity_account in accounts:
                     try:
                         _alter_inbound_user(node.api, inbound_tag, identity_account)
@@ -483,7 +508,7 @@ def add_user_to_node(dbuser: "DBUser", node_id: int):
                 or inbound.get("header_type") == "http"
             ):
                 account.flow = XTLSFlows.NONE
-            accounts = [account]
+            accounts = [] if proxy_type == ProxyTypes.VLESS and not dbuser.legacy_vless_enabled else [account]
             if proxy_type == ProxyTypes.VLESS:
                 accounts.extend(
                     _device_account(user, dbuser, device, inbound)

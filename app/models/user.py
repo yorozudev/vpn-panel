@@ -58,6 +58,7 @@ class User(BaseModel):
     expire: int | None = Field(None, nullable=True)
     data_limit: int | None = Field(ge=0, default=None, description="data_limit can be 0 or greater")
     device_limit: int | None = Field(ge=0, default=None, description="device_limit can be 0 or greater")
+    legacy_vless_enabled: bool = True
     data_limit_reset_strategy: UserDataLimitResetStrategy = UserDataLimitResetStrategy.no_reset
     inbounds: dict[ProxyTypes, list[str]] = {}
     note: str | None = Field(None, nullable=True)
@@ -221,6 +222,7 @@ class UserCreate(User):
 
 class UserModify(User):
     status: UserStatusModify = None
+    legacy_vless_enabled: bool | None = None
     data_limit_reset_strategy: UserDataLimitResetStrategy = None
     bs_extra: int | None = Field(
         default=None,
@@ -414,6 +416,7 @@ class UserDeviceResponse(UserDeviceBase):
     first_seen: datetime
     last_seen: datetime
     last_ip: str | None = None
+    vless_config_delivered_at: datetime | None = None
     model_config = ConfigDict(from_attributes=True)
 
 

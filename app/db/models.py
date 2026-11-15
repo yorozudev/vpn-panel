@@ -220,6 +220,11 @@ class User(Base):
     on_hold_expire_duration = Column(BigInteger, nullable=True, default=None)
     on_hold_timeout = Column(DateTime, nullable=True, default=None)
     device_limit = Column(Integer, nullable=True, default=None)
+    # Legacy VLESS отключается per-user, без глобального удаления UUID. Флаг
+    # позволяет немедленно откатить миграцию через обычное изменение пользователя.
+    legacy_vless_enabled = Column(Boolean, nullable=False, default=True, server_default=text("1"))
+    legacy_vless_last_activity_at = Column(DateTime, nullable=True, default=None)
+    legacy_vless_disabled_at = Column(DateTime, nullable=True, default=None)
     bs_extra = Column(BigInteger, nullable=True, default=None)
     bs_extra_period = Column(String(7), nullable=True, default=None)
 
@@ -404,6 +409,9 @@ class UserDevice(Base):
     status = Column(String(16), nullable=False, default="active", server_default="active")
     # Отдельный VLESS UUID устройства. NULL — legacy/general subscription UUID.
     vless_uuid = Column(String(36), nullable=True, default=None)
+    # Момент формирования подписки с этим UUID. Это не подтверждение применения
+    # конфига клиентом, поэтому отдельно действует migration grace period.
+    vless_config_delivered_at = Column(DateTime, nullable=True, default=None)
     first_seen = Column(DateTime, nullable=False, default=datetime.utcnow)
     last_seen = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

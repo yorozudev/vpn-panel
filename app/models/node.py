@@ -163,6 +163,8 @@ class NodeRealtimeResponse(BaseModel):
     online_users: int | None = None
     online_devices: int | None = None
     legacy_online_users: int | None = None
+    unattributed_users: int | None = None
+    unattributed_devices: int | None = None
     cpu_percent: float | None = None
     memory_percent: float | None = None
     download_bytes_per_second: float | None = None

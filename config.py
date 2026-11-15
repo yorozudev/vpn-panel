@@ -305,6 +305,14 @@ REALTIME_REDIS_URL = config("REALTIME_REDIS_URL", default="redis://127.0.0.1:637
 REALTIME_ONLINE_TTL = config("REALTIME_ONLINE_TTL", cast=int, default=45)
 REALTIME_SYSTEM_TTL = config("REALTIME_SYSTEM_TTL", cast=int, default=60)
 REALTIME_METRICS_CONCURRENCY = config("REALTIME_METRICS_CONCURRENCY", cast=int, default=5)
+REALTIME_ROUTE_TTL = config("REALTIME_ROUTE_TTL", cast=int, default=86400)
+REALTIME_ROUTE_LOG_BUFFER = config("REALTIME_ROUTE_LOG_BUFFER", cast=int, default=10000)
+# Автоматическое отключение legacy VLESS: только после выдачи per-device конфигов
+# всем активным HWID и отсутствия legacy-трафика в течение всего grace period.
+DEVICE_LEGACY_MIGRATION_GRACE_PERIOD = config(
+    "DEVICE_LEGACY_MIGRATION_GRACE_PERIOD", cast=int, default=7 * 24 * 3600
+)
+JOB_DEVICE_LEGACY_MIGRATION_INTERVAL = config("JOB_DEVICE_LEGACY_MIGRATION_INTERVAL", cast=int, default=60)
 NODE_EXPORTER_PORT = config("NODE_EXPORTER_PORT", cast=int, default=9100)
 NODE_EXPORTER_TIMEOUT = config("NODE_EXPORTER_TIMEOUT", cast=float, default=4)
 

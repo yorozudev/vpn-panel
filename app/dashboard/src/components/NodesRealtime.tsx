@@ -14,6 +14,7 @@ import {
   ArrowUpIcon,
   Cog6ToothIcon,
   DevicePhoneMobileIcon,
+  ExclamationTriangleIcon,
   UsersIcon,
 } from "@heroicons/react/24/outline";
 import {
@@ -100,6 +101,18 @@ const NodeRealtimeCard: FC<{
               <Icon as={DevicePhoneMobileIcon} w={3} h={3} />
               {realtime?.online_devices ?? "—"}
             </Badge>
+            {(realtime?.unattributed_devices ?? 0) > 0 && (
+              <Badge
+                colorScheme="orange"
+                display="inline-flex"
+                alignItems="center"
+                gap={1}
+                title={`Нет маршрута Entry → Exit: подписок ${realtime?.unattributed_users ?? 0}, устройств ${realtime?.unattributed_devices ?? 0}`}
+              >
+                <Icon as={ExclamationTriangleIcon} w={3} h={3} />
+                {realtime?.unattributed_devices}
+              </Badge>
+            )}
           </HStack>
         </Box>
         <Button size="sm" variant="ghost" onClick={onSettings} aria-label={t("header.nodeSettings")}>
