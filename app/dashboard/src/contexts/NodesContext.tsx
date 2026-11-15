@@ -123,6 +123,8 @@ export const FetchNodesRealtimeQueryKey = "fetch-nodes-realtime-query-key";
 export const NodeRealtimeSchema = z.object({
   node_id: z.number(),
   online_users: z.number().nullable(),
+  online_devices: z.number().nullable(),
+  legacy_online_users: z.number().nullable(),
   cpu_percent: z.number().nullable(),
   memory_percent: z.number().nullable(),
   download_bytes_per_second: z.number().nullable(),

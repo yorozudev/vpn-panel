@@ -5,6 +5,7 @@ Functions for managing proxy hosts, users, user templates, nodes, and administra
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Literal, cast
+from uuid import uuid4
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
@@ -1102,6 +1103,16 @@ def get_user_device(db: Session, dbuser: User, device_id: int) -> UserDevice | N
 
 def get_user_device_by_hwid(db: Session, dbuser: User, hwid: str) -> UserDevice | None:
     return db.query(UserDevice).filter(UserDevice.user_id == dbuser.id, UserDevice.hwid == hwid).first()
+
+
+def ensure_user_device_vless_uuid(db: Session, dbdevice: UserDevice) -> tuple[str, bool]:
+    """Вернуть постоянный UUID устройства и признак его первого создания."""
+    if dbdevice.vless_uuid:
+        return cast(str, dbdevice.vless_uuid), False
+    dbdevice.vless_uuid = str(uuid4())
+    db.commit()
+    db.refresh(dbdevice)
+    return cast(str, dbdevice.vless_uuid), True
 
 
 def count_user_devices(db: Session, dbuser: User) -> int:

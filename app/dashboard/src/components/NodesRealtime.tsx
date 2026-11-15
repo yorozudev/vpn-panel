@@ -13,6 +13,7 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   Cog6ToothIcon,
+  DevicePhoneMobileIcon,
   UsersIcon,
 } from "@heroicons/react/24/outline";
 import {
@@ -75,9 +76,29 @@ const NodeRealtimeCard: FC<{
           <Text fontWeight="semibold" noOfLines={1} title={node.name}>{node.name}</Text>
           <HStack mt={2} spacing={2}>
             <NodeModalStatusBadge status={node.status ?? "error"} compact />
-            <Badge colorScheme="purple" display="inline-flex" alignItems="center" gap={1}>
+            <Badge
+              colorScheme="purple"
+              display="inline-flex"
+              alignItems="center"
+              gap={1}
+              title="Активные подписки"
+            >
               <Icon as={UsersIcon} w={3} h={3} />
               {realtime?.online_users ?? "—"}
+            </Badge>
+            <Badge
+              colorScheme="blue"
+              display="inline-flex"
+              alignItems="center"
+              gap={1}
+              title={
+                realtime?.legacy_online_users
+                  ? `Устройства; legacy-подключений без отдельного device ID: ${realtime.legacy_online_users}`
+                  : "Активные устройства"
+              }
+            >
+              <Icon as={DevicePhoneMobileIcon} w={3} h={3} />
+              {realtime?.online_devices ?? "—"}
             </Badge>
           </HStack>
         </Box>

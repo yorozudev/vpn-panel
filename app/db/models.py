@@ -402,6 +402,8 @@ class UserDevice(Base):
     # Последний IP, с которого устройство запрашивало /sub (NPVPN-2148); IP наших нод не пишется.
     last_ip = Column(String(45), nullable=True)
     status = Column(String(16), nullable=False, default="active", server_default="active")
+    # Отдельный VLESS UUID устройства. NULL — legacy/general subscription UUID.
+    vless_uuid = Column(String(36), nullable=True, default=None)
     first_seen = Column(DateTime, nullable=False, default=datetime.utcnow)
     last_seen = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

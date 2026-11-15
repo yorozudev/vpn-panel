@@ -95,6 +95,7 @@ def _update_single_user(user_id: int) -> bool:
             db.query(DBUser)
             .options(
                 selectinload(DBUser.proxies).selectinload(DBProxy.excluded_inbounds),
+                selectinload(DBUser.devices),
             )
             .filter(DBUser.id == user_id)
             .first()
@@ -317,6 +318,7 @@ def delete_user_device(
     dbdevice = crud.get_user_device(db, dbuser, device_id)
     if not dbdevice:
         raise HTTPException(status_code=404, detail="Device not found")
+    xray.operations.remove_device(dbuser, dbdevice)
     crud.delete_user_device(db, dbdevice)
     return {"detail": "Device successfully deleted"}
 

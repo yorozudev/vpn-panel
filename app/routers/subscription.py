@@ -331,6 +331,7 @@ def revoke_subscription_device(
     if not dbdevice or dbdevice.status != "active":
         raise HTTPException(status_code=404, detail="Active device not found")
 
+    xray.operations.remove_device(dbuser, dbdevice)
     crud.revoke_user_device(db, dbdevice)
 
     return Response(status_code=204)

@@ -9,8 +9,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from app import logger, xray
 from app.db import GetDB, crud
 from app.models.node import NodeStatus
+from app.models.proxy import ProxyTypes
 from app.models.user import UserResponse
 from app.utils.concurrency import threaded_function
+from app.xray.device_credentials import device_email
 from app.xray.node import XRayNode
 from app.xray.node_config import node_config_json, node_has_inbound
 from config import (
@@ -170,6 +172,66 @@ def _alter_inbound_user(api: XRayAPI, inbound_tag: str, account: Account):
             )
 
 
+def _user_response(dbuser) -> UserResponse:
+    return dbuser if isinstance(dbuser, UserResponse) else UserResponse.model_validate(dbuser)
+
+
+def _active_device_credentials(dbuser) -> list:
+    try:
+        devices = getattr(dbuser, "devices", None) or []
+    except Exception:
+        # Detached ORM-пользователь без заранее загруженных devices: legacy
+        # синхронизацию не роняем, startup/include_db_users восстановит devices.
+        return []
+    return [device for device in devices if device.status == "active" and device.vless_uuid]
+
+
+def _device_account(user: UserResponse, dbuser, dbdevice, inbound: dict) -> Account:
+    proxy_settings = user.proxies[ProxyTypes.VLESS].dict(no_obj=True)
+    proxy_settings["id"] = dbdevice.vless_uuid
+    account = ProxyTypes.VLESS.account_model(
+        email=device_email(dbuser.id, dbdevice.id, dbuser.username),
+        **proxy_settings,
+    )
+    if getattr(account, "flow", None) and (
+        inbound.get("network", "tcp") not in ("tcp", "kcp")
+        or (inbound.get("network", "tcp") in ("tcp", "kcp") and inbound.get("tls") not in ("tls", "reality"))
+        or inbound.get("header_type") == "http"
+    ):
+        account.flow = XTLSFlows.NONE
+    return account
+
+
+def add_device(dbuser, dbdevice) -> None:
+    """Добавить новый device identity в назначенные пользователю VLESS inbounds."""
+    if not dbdevice.vless_uuid or dbdevice.status != "active":
+        return
+    user = _user_response(dbuser)
+    if ProxyTypes.VLESS not in user.proxies:
+        return
+    ready_nodes = _get_ready_nodes()
+    for inbound_tag in user.inbounds.get(ProxyTypes.VLESS, []):
+        inbound = xray.config.inbounds_by_tag.get(inbound_tag, {})
+        account = _device_account(user, dbuser, dbdevice, inbound)
+        _add_user_to_inbound(xray.api, inbound_tag, account)
+        for node in ready_nodes:
+            if _node_has_inbound(node, inbound_tag):
+                _add_user_to_inbound(node.api, inbound_tag, account)
+
+
+def remove_device(dbuser, dbdevice) -> None:
+    """Отозвать device identity во всех VLESS inbounds, включая старые назначения."""
+    email = device_email(dbuser.id, dbdevice.id, dbuser.username)
+    vless_inbounds = xray.config.inbounds_by_protocol.get("vless", [])
+    inbound_tags = [inbound["tag"] for inbound in vless_inbounds] or list(xray.config.inbounds_by_tag)
+    ready_nodes = _get_ready_nodes()
+    for inbound_tag in inbound_tags:
+        _remove_user_from_inbound(xray.api, inbound_tag, email)
+        for node in ready_nodes:
+            if _node_has_inbound(node, inbound_tag):
+                _remove_user_from_inbound(node.api, inbound_tag, email)
+
+
 def add_user(dbuser: "DBUser"):
     if dbuser is None:
         logger.warning("[xray.add_user] called with dbuser=None; skipping")
@@ -251,18 +313,21 @@ def remove_user(dbuser: "DBUser"):
     ready_nodes = _get_ready_nodes()
     logger.info(f"[xray.remove_user] nodes_ready={len(ready_nodes)} nodes_total={total_nodes}")
 
+    emails = [email] + [device_email(dbuser.id, device.id, dbuser.username) for device in _active_device_credentials(dbuser)]
     for inbound_tag in target_inbounds:
-        _remove_user_from_inbound(xray.api, inbound_tag, email)
+        for identity_email in emails:
+            _remove_user_from_inbound(xray.api, inbound_tag, identity_email)
         for node in ready_nodes:
             if not _node_has_inbound(node, inbound_tag):
                 continue
             # Не допускаем падения при недоступной ноде
-            try:
-                _remove_user_from_inbound(node.api, inbound_tag, email)
-            except Exception as e:
-                logger.warning(
-                    f'XRAY node check/remove failed for user "{dbuser.username}" on inbound "{inbound_tag}": {type(e).__name__}: {e}'
-                )
+            for identity_email in emails:
+                try:
+                    _remove_user_from_inbound(node.api, inbound_tag, identity_email)
+                except Exception as e:
+                    logger.warning(
+                        f'XRAY node check/remove failed for user "{dbuser.username}" on inbound "{inbound_tag}": {type(e).__name__}: {e}'
+                    )
 
 
 def update_user(dbuser: "DBUser"):
@@ -296,33 +361,47 @@ def update_user(dbuser: "DBUser"):
             ):
                 account.flow = XTLSFlows.NONE
 
-            _alter_inbound_user(xray.api, inbound_tag, account)  # main core
+            accounts = [account]
+            if proxy_type == ProxyTypes.VLESS:
+                accounts.extend(
+                    _device_account(user, dbuser, device, inbound)
+                    for device in _active_device_credentials(dbuser)
+                )
+            for identity_account in accounts:
+                _alter_inbound_user(xray.api, inbound_tag, identity_account)  # main core
             for node in ready_nodes:
                 if not _node_has_inbound(node, inbound_tag):
                     continue
-                try:
-                    _alter_inbound_user(node.api, inbound_tag, account)
-                except Exception as e:
-                    logger.warning(
-                        f'[xray.update_user] node alter failed user="{dbuser.username}" '
-                        f'inbound="{inbound_tag}": {type(e).__name__}: {e}'
-                    )
+                for identity_account in accounts:
+                    try:
+                        _alter_inbound_user(node.api, inbound_tag, identity_account)
+                    except Exception as e:
+                        logger.warning(
+                            f'[xray.update_user] node alter failed user="{dbuser.username}" '
+                            f'inbound="{inbound_tag}": {type(e).__name__}: {e}'
+                        )
 
     for inbound_tag in xray.config.inbounds_by_tag:
         if inbound_tag in active_inbounds:
             continue
-        # remove disabled inbounds
-        _remove_user_from_inbound(xray.api, inbound_tag, email)
+        # remove disabled inbounds, including per-device VLESS identities
+        emails = [email] + [
+            device_email(dbuser.id, device.id, dbuser.username)
+            for device in _active_device_credentials(dbuser)
+        ]
+        for identity_email in emails:
+            _remove_user_from_inbound(xray.api, inbound_tag, identity_email)
         for node in ready_nodes:
             if not _node_has_inbound(node, inbound_tag):
                 continue
-            try:
-                _remove_user_from_inbound(node.api, inbound_tag, email)
-            except Exception as e:
-                logger.warning(
-                    f"[xray.update_user] node remove (disabled inbound) failed "
-                    f'user="{dbuser.username}" inbound="{inbound_tag}": {type(e).__name__}: {e}'
-                )
+            for identity_email in emails:
+                try:
+                    _remove_user_from_inbound(node.api, inbound_tag, identity_email)
+                except Exception as e:
+                    logger.warning(
+                        f"[xray.update_user] node remove (disabled inbound) failed "
+                        f'user="{dbuser.username}" inbound="{inbound_tag}": {type(e).__name__}: {e}'
+                    )
     logger.info(
         f"[xray.update_user] done email={email} nodes_ready={len(ready_nodes)} "
         f"nodes_total={total_nodes} dt={time.monotonic() - t0:.2f}s"
@@ -363,17 +442,19 @@ def remove_user_from_node(dbuser: "DBUser", node_id: int):
         return  # нода не подключена — фильтрация стартового конфига снимет её при connect
     email = f"{dbuser.id}.{dbuser.username}"
     user = UserResponse.model_validate(dbuser)
+    emails = [email] + [device_email(dbuser.id, device.id, dbuser.username) for device in _active_device_credentials(dbuser)]
     for inbound_tag in _user_inbound_tags(user):
         if not _node_has_inbound(node, inbound_tag):
             continue
-        try:
-            _remove_user_from_inbound(node.api, inbound_tag, email)
-        except Exception as e:
-            logger.warning(
-                f"[xray.remove_user_from_node] node={node_id} "
-                f'user="{dbuser.username}" inbound="{inbound_tag}": '
-                f"{type(e).__name__}: {e}"
-            )
+        for identity_email in emails:
+            try:
+                _remove_user_from_inbound(node.api, inbound_tag, identity_email)
+            except Exception as e:
+                logger.warning(
+                    f"[xray.remove_user_from_node] node={node_id} "
+                    f'user="{dbuser.username}" inbound="{inbound_tag}": '
+                    f"{type(e).__name__}: {e}"
+                )
     logger.info(f"[xray.remove_user_from_node] email={email} node_id={node_id}")
 
 
@@ -402,14 +483,21 @@ def add_user_to_node(dbuser: "DBUser", node_id: int):
                 or inbound.get("header_type") == "http"
             ):
                 account.flow = XTLSFlows.NONE
-            try:
-                _add_user_to_inbound(node.api, inbound_tag, account)
-            except Exception as e:
-                logger.warning(
-                    f"[xray.add_user_to_node] node={node_id} "
-                    f'user="{dbuser.username}" inbound="{inbound_tag}": '
-                    f"{type(e).__name__}: {e}"
+            accounts = [account]
+            if proxy_type == ProxyTypes.VLESS:
+                accounts.extend(
+                    _device_account(user, dbuser, device, inbound)
+                    for device in _active_device_credentials(dbuser)
                 )
+            for identity_account in accounts:
+                try:
+                    _add_user_to_inbound(node.api, inbound_tag, identity_account)
+                except Exception as e:
+                    logger.warning(
+                        f"[xray.add_user_to_node] node={node_id} "
+                        f'user="{dbuser.username}" inbound="{inbound_tag}": '
+                        f"{type(e).__name__}: {e}"
+                    )
     logger.info(f"[xray.add_user_to_node] email={email} node_id={node_id}")
 
 

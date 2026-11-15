@@ -1,9 +1,11 @@
 import json
 import math
 from datetime import UTC, datetime
+from uuid import UUID
 
 from app.db import Session, crud
 from app.db.models import User
+from app.models.proxy import ProxyTypes
 from app.models.user import UserResponse
 
 
@@ -51,6 +53,32 @@ def get_empty_subscription_user(user: UserResponse) -> UserResponse:
     return user.model_copy(update={"proxies": {}, "inbounds": {}})
 
 
+def _apply_device_vless_credential(
+    user: UserResponse,
+    db: Session,
+    dbuser: User,
+    dbdevice,
+) -> UserResponse:
+    """Подставить UUID разрешённого HWID, не меняя остальные proxy-протоколы."""
+    if dbdevice.hwid == crud.UNKNOWN_DEVICE_HWID or ProxyTypes.VLESS not in user.proxies:
+        return user
+    vless_proxy = user.proxies[ProxyTypes.VLESS]
+    if not hasattr(vless_proxy, "model_copy"):
+        # Совместимость с облегчёнными subscription-объектами внешних модулей.
+        return user
+    credential, created = crud.ensure_user_device_vless_uuid(db, dbdevice)
+    if created:
+        # Стартовые конфиги тоже содержат devices; этот вызов нужен для доступа
+        # без ожидания перезапуска Xray. Старый общий UUID не отзывается.
+        from app import xray
+
+        xray.operations.add_device(dbuser, dbdevice)
+    device_proxy = vless_proxy.model_copy(update={"id": UUID(credential)})
+    return user.model_copy(
+        update={"proxies": {**user.proxies, ProxyTypes.VLESS: device_proxy}}
+    )
+
+
 def resolve_device_limit_subscription_state(
     user: UserResponse,
     db: Session,
@@ -87,6 +115,8 @@ def resolve_device_limit_subscription_state(
         if registered:
             dbdevice = crud.get_user_device_by_hwid(db, dbuser, x_hwid or crud.UNKNOWN_DEVICE_HWID)
         within_limit = crud.is_device_within_limit(db, dbuser, dbdevice)
+        if registered and within_limit and not unsupported_client and dbdevice is not None:
+            user = _apply_device_vless_credential(user, db, dbuser, dbdevice)
         over_limit = not unsupported_client and not within_limit
         device_limited = over_limit
         device_limited_hard_for_gen = over_limit and hard_mode

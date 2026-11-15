@@ -16,6 +16,7 @@ from app.db.models import Admin, BotBsDaily, Node, NodeUsage, NodeUserBsUsage, N
 from app.services.node_realtime import set_nodes_online
 from app.utils.concurrency import get_xray_executor
 from app.xray.bs_limit import bs_counter_step, period_keys
+from app.xray.device_credentials import online_counts, parse_xray_identity
 from config import (
     DISABLE_RECORDING_NODE_USAGE,
     DISABLE_RECORDING_NODE_USER_USAGE,
@@ -294,9 +295,12 @@ def get_users_stats(api: XRayAPI):
     try:
         params = defaultdict(int)
         for stat in filter(attrgetter("value"), api.get_users_stats(reset=True, timeout=30)):
-            params[stat.name.split(".", 1)[0]] += stat.value
-        params = list({"uid": uid, "value": value} for uid, value in params.items())
-        return params
+            uid, device_id = parse_xray_identity(stat.name)
+            params[(uid, device_id)] += stat.value
+        return [
+            {"uid": uid, "device_id": device_id, "value": value}
+            for (uid, device_id), value in params.items()
+        ]
     except xray_exc.XrayError:
         return []
 
@@ -338,7 +342,7 @@ def record_user_usages():
     # обращений к нодам или SQL. None отличает ошибку сбора от настоящего нуля.
     set_nodes_online(
         {
-            node_id: (None if node_id in failed_nodes else len({param["uid"] for param in params}))
+            node_id: (None if node_id in failed_nodes else online_counts(params))
             for node_id, params in api_params.items()
             if node_id is not None
         }

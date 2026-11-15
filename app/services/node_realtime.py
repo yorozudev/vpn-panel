@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from redis import Redis
 from redis.exceptions import RedisError
@@ -26,18 +26,26 @@ def _system_key(node_id: int) -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
-def set_nodes_online(values: dict[int, int | None]) -> None:
-    """None означает ошибку сбора, 0 — успешный ответ Xray без активных users."""
+def set_nodes_online(values: dict[int, dict | None]) -> None:
+    """None означает ошибку сбора, нулевые счётчики — успешный пустой ответ."""
     if not values:
         return
     try:
         with _redis.pipeline() as pipe:
-            for node_id, online_users in values.items():
-                payload = {"online_users": online_users, "measured_at": _now()}
-                pipe.set(_online_key(node_id), json.dumps(payload), ex=REALTIME_ONLINE_TTL)
+            for node_id, counts in values.items():
+                payload = counts if counts is not None else {
+                    "online_users": None,
+                    "online_devices": None,
+                    "legacy_online_users": None,
+                }
+                pipe.set(
+                    _online_key(node_id),
+                    json.dumps({**payload, "measured_at": _now()}),
+                    ex=REALTIME_ONLINE_TTL,
+                )
             pipe.execute()
     except RedisError as exc:
         logger.warning("[realtime] failed to write online stats: %s", exc)
@@ -57,6 +65,8 @@ def get_nodes_realtime(node_ids: list[int]) -> list[dict]:
 
     empty = {
         "online_users": None,
+        "online_devices": None,
+        "legacy_online_users": None,
         "cpu_percent": None,
         "memory_percent": None,
         "download_bytes_per_second": None,
@@ -80,7 +90,8 @@ def get_nodes_realtime(node_ids: list[int]) -> list[dict]:
         online_raw, system_raw = rows[index * 2 : index * 2 + 2]
         if online_raw:
             online = json.loads(online_raw)
-            result[node_id]["online_users"] = online.get("online_users")
+            for field in ("online_users", "online_devices", "legacy_online_users"):
+                result[node_id][field] = online.get(field)
         if system_raw:
             system = json.loads(system_raw)
             for field in (

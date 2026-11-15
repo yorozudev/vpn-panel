@@ -13,6 +13,7 @@ from app.db import models as db_models
 from app.models.proxy import ProxyTypes
 from app.models.user import UserStatus
 from app.utils.crypto import get_cert_SANs
+from app.xray.device_credentials import device_email
 from app.xray.node_config import _NodeJsonCache, inline_local_certificates
 from app.xray.xhttp_extra import inbound_xhttp_extra
 from config import DEBUG, XRAY_EXCLUDE_INBOUND_TAGS, XRAY_FALLBACKS_INBOUND_TAG
@@ -362,6 +363,23 @@ class XRayConfig(dict):
                 )
             )
             result = query.all()
+            device_rows = (
+                db.query(
+                    db_models.UserDevice.user_id,
+                    db_models.UserDevice.id,
+                    db_models.UserDevice.vless_uuid,
+                )
+                .join(db_models.User, db_models.User.id == db_models.UserDevice.user_id)
+                .filter(
+                    db_models.User.status.in_([UserStatus.active, UserStatus.on_hold]),
+                    db_models.UserDevice.status == "active",
+                    db_models.UserDevice.vless_uuid.isnot(None),
+                )
+                .all()
+            )
+            devices_by_user = defaultdict(list)
+            for device_row in device_rows:
+                devices_by_user[device_row.user_id].append((device_row.id, device_row.vless_uuid))
 
             grouped_data = defaultdict(list)
 
@@ -403,6 +421,24 @@ class XRayConfig(dict):
                             del client["flow"]
 
                         clients.append(client)
+
+                        if proxy_type == "vless":
+                            for device_id, device_uuid in devices_by_user.get(user_id, []):
+                                device_client = {
+                                    "email": device_email(user_id, device_id, username),
+                                    **settings,
+                                    "id": device_uuid,
+                                }
+                                if device_client.get("flow") and (
+                                    inbound.get("network", "tcp") not in ("tcp", "raw", "kcp")
+                                    or (
+                                        inbound.get("network", "tcp") in ("tcp", "raw", "kcp")
+                                        and inbound.get("tls") not in ("tls", "reality")
+                                    )
+                                    or inbound.get("header_type") == "http"
+                                ):
+                                    del device_client["flow"]
+                                clients.append(device_client)
 
         # Серты инлайним один раз здесь (до шаринга/сериализации), чтобы пер-нодный
         # билд и node.start не читали файлы и не сериализовали их заново.
