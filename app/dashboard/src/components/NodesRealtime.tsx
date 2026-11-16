@@ -25,9 +25,10 @@ import {
 } from "contexts/NodesContext";
 import { useDashboard } from "contexts/DashboardContext";
 import useGetUser from "hooks/useGetUser";
-import { FC } from "react";
+import { FC, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { NodeModalStatusBadge } from "./NodeModalStatusBadge";
+import { NodeOnlineUsersModal } from "./NodeOnlineUsersModal";
 
 function formatSpeed(bytesPerSecond: number | null) {
   if (bytesPerSecond === null) return "—";
@@ -63,6 +64,7 @@ const NodeRealtimeCard: FC<{
   onSettings: () => void;
 }> = ({ node, realtime, onSettings }) => {
   const { t } = useTranslation();
+  const [isOnlineUsersOpen, setIsOnlineUsersOpen] = useState(false);
   return (
     <Box
       p={4}
@@ -77,16 +79,32 @@ const NodeRealtimeCard: FC<{
           <Text fontWeight="semibold" noOfLines={1} title={node.name}>{node.name}</Text>
           <HStack mt={2} spacing={2}>
             <NodeModalStatusBadge status={node.status ?? "error"} compact />
-            <Badge
-              colorScheme="purple"
+            <Button
+              variant="unstyled"
+              minW={0}
+              h="auto"
+              p={0}
               display="inline-flex"
-              alignItems="center"
-              gap={1}
-              title="Активные подписки"
+              borderRadius="md"
+              onClick={() => setIsOnlineUsersOpen(true)}
+              isDisabled={realtime?.online_users == null}
+              aria-label="Показать активных пользователей"
+              aria-haspopup="dialog"
+              title="Показать активных пользователей"
+              _hover={{ filter: "brightness(0.95)" }}
+              _dark={{ _hover: { filter: "brightness(1.15)" } }}
             >
-              <Icon as={UsersIcon} w={3} h={3} />
-              {realtime?.online_users ?? "—"}
-            </Badge>
+              <Badge
+                colorScheme="purple"
+                display="inline-flex"
+                alignItems="center"
+                gap={1}
+                cursor="pointer"
+              >
+                <Icon as={UsersIcon} w={3} h={3} />
+                {realtime?.online_users ?? "—"}
+              </Badge>
+            </Button>
             <Badge
               colorScheme="blue"
               display="inline-flex"
@@ -138,6 +156,14 @@ const NodeRealtimeCard: FC<{
           </HStack>
         </HStack>
       </VStack>
+      {node.id != null && (
+        <NodeOnlineUsersModal
+          nodeId={node.id}
+          nodeName={node.name}
+          isOpen={isOnlineUsersOpen}
+          onClose={() => setIsOnlineUsersOpen(false)}
+        />
+      )}
     </Box>
   );
 };

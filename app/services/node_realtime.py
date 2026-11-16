@@ -21,6 +21,10 @@ def _online_key(node_id: int) -> str:
     return f"node_users_online:{node_id}"
 
 
+def _online_details_key(node_id: int) -> str:
+    return f"node_users_online_details:{node_id}"
+
+
 def _system_key(node_id: int) -> str:
     return f"node_system_stats:{node_id}"
 
@@ -87,22 +91,58 @@ def set_nodes_online(values: dict[int, dict | None]) -> None:
         return
     try:
         with _redis.pipeline() as pipe:
-            for node_id, counts in values.items():
-                payload = counts if counts is not None else {
+            for node_id, value in values.items():
+                measured_at = _now()
+                payload = value if value is not None else {
                     "online_users": None,
                     "online_devices": None,
                     "legacy_online_users": None,
                     "unattributed_users": None,
                     "unattributed_devices": None,
                 }
+                identities = [] if value is None else value.get("identities", [])
+                counters = {key: count for key, count in payload.items() if key != "identities"}
                 pipe.set(
                     _online_key(node_id),
-                    json.dumps({**payload, "measured_at": _now()}),
+                    json.dumps({**counters, "measured_at": measured_at}),
+                    ex=REALTIME_ONLINE_TTL,
+                )
+                # В Redis остаются только технические uid/device_id. Username,
+                # HWID и IP сюда не копируются; названия подтягиваются из БД
+                # лишь при открытии списка администратором.
+                pipe.set(
+                    _online_details_key(node_id),
+                    json.dumps({
+                        "available": value is not None,
+                        "identities": identities,
+                        "measured_at": measured_at,
+                    }),
                     ex=REALTIME_ONLINE_TTL,
                 )
             pipe.execute()
     except RedisError as exc:
         logger.warning("[realtime] failed to write online stats: %s", exc)
+
+
+def get_node_online_identities(node_id: int) -> dict:
+    """Вернуть последний снимок identities без обращения к Xray."""
+    empty = {"available": False, "identities": [], "measured_at": None}
+    try:
+        raw = _redis.get(_online_details_key(node_id))
+    except RedisError as exc:
+        logger.warning("[realtime] failed to read online users for node %s: %s", node_id, exc)
+        return empty
+    if not raw:
+        return empty
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return empty
+    return {
+        "available": bool(value.get("available")),
+        "identities": value.get("identities") or [],
+        "measured_at": value.get("measured_at"),
+    }
 
 
 def set_node_system(node_id: int, payload: dict) -> None:

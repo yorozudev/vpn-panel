@@ -52,13 +52,13 @@ def _counts(identities: set[Identity], unattributed: set[Identity]) -> dict[str,
     }
 
 
-def build_routed_online_counts(
+def build_routed_online(
     api_params: dict[int, list[dict]],
     failed_nodes: set[int],
     entry_routes: list[dict],
     observations: dict[tuple[int, Identity], dict],
 ) -> dict[int, dict | None]:
-    """Объединить локальные identities Entry/Direct/Exit с маршрутами Entry→Exit.
+    """Объединить счётчики и дедуплицированные identities Entry/Direct/Exit.
 
     Долгоживущее соединение не требует новой access-строки: Redis observation
     продлевается, пока identity присутствует в текущем stats snapshot.
@@ -101,5 +101,28 @@ def build_routed_online_counts(
             result[node_id] = None
             continue
         identities = local.get(node_id, set()) | routed.get(node_id, set())
-        result[node_id] = _counts(identities, unattributed.get(node_id, set()))
+        result[node_id] = {
+            **_counts(identities, unattributed.get(node_id, set())),
+            "identities": [
+                {"uid": uid, "device_id": device_id}
+                for uid, device_id in sorted(
+                    identities,
+                    key=lambda item: (int(item[0]), item[1] is not None, item[1] or 0),
+                )
+            ],
+        }
     return result
+
+
+def build_routed_online_counts(
+    api_params: dict[int, list[dict]],
+    failed_nodes: set[int],
+    entry_routes: list[dict],
+    observations: dict[tuple[int, Identity], dict],
+) -> dict[int, dict | None]:
+    """Совместимый вариант, возвращающий только счётчики."""
+    values = build_routed_online(api_params, failed_nodes, entry_routes, observations)
+    return {
+        node_id: None if value is None else {key: count for key, count in value.items() if key != "identities"}
+        for node_id, value in values.items()
+    }

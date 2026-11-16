@@ -18,7 +18,7 @@ from app.services.node_realtime import get_route_observations, set_nodes_online
 from app.utils.concurrency import get_xray_executor
 from app.xray.bs_limit import bs_counter_step, period_keys
 from app.xray.device_credentials import parse_xray_identity
-from app.xray.route_online import build_routed_online_counts, identity_of
+from app.xray.route_online import build_routed_online, identity_of
 from config import (
     DISABLE_RECORDING_NODE_USAGE,
     DISABLE_RECORDING_NODE_USER_USAGE,
@@ -376,7 +376,7 @@ def record_user_usages():
     for entry_id in {route["entry_node_id"] for route in entry_routes}:
         identities = {identity_of(param) for param in node_params.get(entry_id, [])}
         observations.update(get_route_observations(entry_id, identities))
-    set_nodes_online(build_routed_online_counts(node_params, failed_nodes, entry_routes, observations))
+    set_nodes_online(build_routed_online(node_params, failed_nodes, entry_routes, observations))
 
     users_usage = defaultdict(int)
     for node_id, params in api_params.items():

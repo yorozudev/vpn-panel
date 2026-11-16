@@ -7,11 +7,13 @@ from starlette.websockets import WebSocketDisconnect
 
 from app import logger, xray
 from app.db import Session, crud, get_db
+from app.db.models import User, UserDevice
 from app.dependencies import get_dbnode, validate_dates
 from app.models.admin import Admin
 from app.models.node import (
     NodeCreate,
     NodeModify,
+    NodeOnlineUsersResponse,
     NodeRealtimeResponse,
     NodeResponse,
     NodeSettings,
@@ -19,7 +21,8 @@ from app.models.node import (
     NodesUsageResponse,
 )
 from app.models.proxy import ProxyHost
-from app.services.node_realtime import get_nodes_realtime
+from app.services.node_online_users import build_online_user_list
+from app.services.node_realtime import get_node_online_identities, get_nodes_realtime
 from app.utils import responses
 
 router = APIRouter(tags=["Node"], prefix="/api", responses={401: responses._401, 403: responses._403})
@@ -202,6 +205,26 @@ def get_nodes_realtime_snapshot(
     """Последний кешированный снимок; запрос не обращается к Xray или exporter."""
     node_ids = [node.id for node in crud.get_nodes(db)]
     return get_nodes_realtime(node_ids)
+
+
+@router.get("/node/{node_id}/online-users", response_model=NodeOnlineUsersResponse)
+def get_node_online_users(
+    dbnode: NodeResponse = Depends(get_dbnode),
+    db: Session = Depends(get_db),
+    _: Admin = Depends(Admin.check_sudo_admin),
+):
+    """Список активных подписок и устройств из последнего Redis-снимка."""
+    snapshot = get_node_online_identities(dbnode.id)
+    identities = snapshot["identities"] if snapshot["available"] else []
+    user_ids = sorted({int(identity["uid"]) for identity in identities})
+    users = db.query(User.id, User.username).filter(User.id.in_(user_ids)).all() if user_ids else []
+    devices = db.query(UserDevice).filter(UserDevice.user_id.in_(user_ids)).all() if user_ids else []
+    return {
+        "node_id": dbnode.id,
+        "available": snapshot["available"],
+        "measured_at": snapshot["measured_at"],
+        "users": build_online_user_list(snapshot, users, devices),
+    }
 
 
 @router.get("/nodes/usage", response_model=NodesUsageResponse)

@@ -1,5 +1,5 @@
 from app.xray.cascade_config import cascade_config, cascade_outbound_tag
-from app.xray.route_online import build_routed_online_counts, parse_access_route
+from app.xray.route_online import build_routed_online, build_routed_online_counts, parse_access_route
 
 
 def param(uid, device_id=None, value=100):
@@ -112,6 +112,29 @@ def test_non_cascade_inbound_on_mixed_entry_is_not_unattributed():
 def test_failed_local_collection_remains_unknown():
     result = build_routed_online_counts({2: []}, {2}, [], {})
     assert result[2] is None
+
+
+def test_online_details_expose_deduplicated_identities_for_entry_and_exit():
+    first = param(42, 101)
+    second = param(42, 102)
+    result = build_routed_online(
+        {1: [first, second], 2: [first]},
+        set(),
+        [route(1, 2, "ENTRY")],
+        {**observation(first, 2, "ENTRY"), **observation(second, 2, "ENTRY")},
+    )
+
+    assert result[1]["identities"] == [
+        {"uid": "42", "device_id": 101},
+        {"uid": "42", "device_id": 102},
+    ]
+    assert result[2]["identities"] == result[1]["identities"]
+    assert "identities" not in build_routed_online_counts(
+        {1: [first], 2: []},
+        set(),
+        [route(1, 2, "ENTRY")],
+        observation(first, 2, "ENTRY"),
+    )[1]
 
 
 def test_entry_config_enables_access_log_only_on_entry():

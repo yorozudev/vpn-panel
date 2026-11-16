@@ -173,6 +173,28 @@ class NodeRealtimeResponse(BaseModel):
     metrics_available: bool = False
 
 
+class NodeOnlineDeviceResponse(BaseModel):
+    device_id: int | None = None
+    is_legacy: bool = False
+    device_model: str | None = None
+    device_os: str | None = None
+    ver_os: str | None = None
+    last_activity_at: datetime | None = None
+
+
+class NodeOnlineUserResponse(BaseModel):
+    user_id: int
+    username: str | None = None
+    devices: list[NodeOnlineDeviceResponse] = []
+
+
+class NodeOnlineUsersResponse(BaseModel):
+    node_id: int
+    available: bool
+    measured_at: datetime | None = None
+    users: list[NodeOnlineUserResponse] = []
+
+
 class NodeUsageResponse(BaseModel):
     node_id: int | None = None
     node_name: str
