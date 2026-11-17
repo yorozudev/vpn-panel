@@ -1093,3 +1093,207 @@ def test_review_bs_nodes_does_not_block_base_usage_when_pool_available(db, monke
     review_bs_nodes.review_bs_nodes()
 
     assert db.query(NodeUserBlock).filter(NodeUserBlock.user_id == USER_ID).count() == 0
+
+
+def test_record_bs_usage_uses_per_user_rolling_periods(db, patched_getdb):
+    from datetime import timedelta
+
+    second_id = USER_ID + 1
+    first_anchor = datetime.utcnow().replace(microsecond=0) - timedelta(days=2)
+    second_anchor = datetime.utcnow().replace(microsecond=0) - timedelta(days=10)
+    first = db.query(User).filter(User.id == USER_ID).one()
+    first.bs_reset_strategy = "day"
+    first.bs_last_reset_at = first_anchor
+    second = User(
+        id=second_id,
+        username="TEST100_SECOND",
+        created_at=second_anchor,
+        bs_reset_strategy="month",
+        bs_last_reset_at=second_anchor,
+    )
+    db.add(second)
+    db.commit()
+
+    record_bs_user_stats(
+        [{"uid": USER_ID, "value": 100}, {"uid": second_id, "value": 200}],
+        NODE_ID,
+    )
+    record_bs_user_stats(
+        [{"uid": USER_ID, "value": 25}, {"uid": second_id, "value": 50}],
+        NODE_ID,
+    )
+
+    rows = db.query(NodeUserBsUsage).order_by(NodeUserBsUsage.user_id).all()
+    assert [(r.user_id, r.monthly_used, r.monthly_period) for r in rows] == [
+        (USER_ID, 125, first_anchor.isoformat(timespec="seconds")),
+        (second_id, 250, second_anchor.isoformat(timespec="seconds")),
+    ]
+
+
+def test_ordinary_reset_does_not_touch_bs_usage(db):
+    from app.db import crud
+
+    user = db.query(User).filter(User.id == USER_ID).one()
+    user.used_traffic = 500
+    db.add(NodeUserBsUsage(user_id=USER_ID, node_id=NODE_ID, monthly_used=300, monthly_period="keep-me"))
+    db.commit()
+
+    crud.reset_user_data_usage(db, user)
+    db.expire_all()
+
+    assert db.query(User).filter(User.id == USER_ID).one().used_traffic == 0
+    row = db.query(NodeUserBsUsage).filter(NodeUserBsUsage.user_id == USER_ID).one()
+    assert (row.monthly_used, row.monthly_period) == (300, "keep-me")
+
+
+def test_mass_ordinary_reset_does_not_touch_bs_usage(db):
+    from app.db import crud
+
+    db.add(NodeUserBsUsage(user_id=USER_ID, node_id=NODE_ID, monthly_used=300, monthly_period="keep-me"))
+    db.commit()
+    crud.reset_all_users_data_usage(db)
+    db.expire_all()
+    assert db.query(NodeUserBsUsage).filter(NodeUserBsUsage.user_id == USER_ID).one().monthly_used == 300
+
+
+def test_independent_bs_reset_preserves_limit_and_calendar_extra(db, monkeypatch):
+    from contextlib import nullcontext
+    from datetime import timedelta
+
+    from app.jobs import reset_user_bs_data_usage as bs_reset_job
+
+    user = db.query(User).filter(User.id == USER_ID).one()
+    user.bs_reset_strategy = "day"
+    user.bs_last_reset_at = datetime.utcnow() - timedelta(days=1)
+    user.bs_monthly_limit = 7 * GB
+    user.bs_extra = 2 * GB
+    user.bs_extra_period = period_keys(datetime.utcnow())
+    db.add(NodeUserBsUsage(user_id=USER_ID, node_id=NODE_ID, monthly_used=300, monthly_period="old-period"))
+    db.commit()
+    monkeypatch.setattr(bs_reset_job, "GetDB", lambda: nullcontext(db))
+
+    bs_reset_job.reset_user_bs_data_usage()
+    db.expire_all()
+
+    user = db.query(User).filter(User.id == USER_ID).one()
+    assert db.query(NodeUserBsUsage).filter(NodeUserBsUsage.user_id == USER_ID).count() == 0
+    assert user.bs_monthly_limit == 7 * GB
+    assert user.bs_reset_strategy == "day"
+    assert user.bs_extra == 2 * GB
+    assert user.bs_extra_period == period_keys(datetime.utcnow())
+    assert user.bs_last_reset_at is not None
+
+
+def test_current_rolling_usage_is_charged_against_stale_calendar_extra(db):
+    user = _bot_with_limit(db, 3 * GB)
+    anchor = datetime.utcnow().replace(microsecond=0)
+    user.bs_last_reset_at = anchor
+    user.bs_extra = 10 * GB
+    user.bs_extra_period = "2000-01"
+    db.add(
+        NodeUserBsUsage(
+            user_id=USER_ID,
+            node_id=NODE_ID,
+            monthly_used=8 * GB,
+            monthly_period=anchor.isoformat(timespec="seconds"),
+        )
+    )
+    db.commit()
+    db.expire_all()
+
+    user = db.query(User).filter(User.id == USER_ID).one()
+    assert user.bs_extra_effective == 5 * GB
+    assert user.bs_monthly_used == 8 * GB
+    assert user.bs_monthly_limit_total == 8 * GB
+
+
+def test_update_user_changes_only_bs_strategy_and_keeps_anchor(db):
+    from app.db import crud
+    from app.models.user import UserModify
+
+    user = db.query(User).filter(User.id == USER_ID).one()
+    anchor = datetime.utcnow().replace(microsecond=0)
+    user.bs_last_reset_at = anchor
+    db.commit()
+
+    crud.update_user(db, user, UserModify(proxies={}, bs_reset_strategy="week"))
+    db.expire_all()
+    user = db.query(User).filter(User.id == USER_ID).one()
+    assert user.bs_reset_strategy == "week"
+    assert user.bs_last_reset_at == anchor
+
+
+def test_user_bs_strategy_api_default_and_validation():
+    from pydantic import ValidationError
+
+    from app.models.user import User, UserModify
+
+    assert User().bs_reset_strategy == "month"
+    assert UserModify(bs_reset_strategy="year").bs_reset_strategy == "year"
+    with pytest.raises(ValidationError):
+        UserModify(bs_reset_strategy="no_reset")
+
+
+def test_user_dialog_submits_bs_reset_strategy():
+    from pathlib import Path
+
+    source = (Path(__file__).parent.parent / "app/dashboard/src/components/UserDialog.tsx").read_text()
+    user_type = (Path(__file__).parent.parent / "app/dashboard/src/types/User.ts").read_text()
+    assert 'bs_reset_strategy: "month"' in source
+    assert 'name="bs_reset_strategy"' in source
+    assert 'z.enum(["day", "week", "month", "year"])' in source
+    assert '| "bs_reset_strategy"' in user_type
+
+
+def test_review_bs_nodes_uses_each_users_current_rolling_period(db, monkeypatch):
+    from contextlib import nullcontext
+
+    from app.db.models import NodeUserBlock
+    from app.jobs import review_bs_nodes
+
+    second_id = USER_ID + 1
+    first_anchor = datetime.utcnow().replace(microsecond=0)
+    second_anchor = first_anchor.replace(year=first_anchor.year - 1)
+    first = db.query(User).filter(User.id == USER_ID).one()
+    first.bs_monthly_limit = GB
+    first.bs_last_reset_at = first_anchor
+    second = User(
+        id=second_id,
+        username="TEST100_REVIEW_SECOND",
+        created_at=second_anchor,
+        bs_monthly_limit=GB,
+        bs_last_reset_at=second_anchor,
+    )
+    db.add(second)
+    db.add_all(
+        [
+            NodeUserBsUsage(
+                user_id=USER_ID,
+                node_id=NODE_ID,
+                monthly_used=2 * GB,
+                monthly_period=first_anchor.isoformat(timespec="seconds"),
+            ),
+            NodeUserBsUsage(
+                user_id=second_id,
+                node_id=NODE_ID,
+                monthly_used=2 * GB,
+                monthly_period="expired-period",
+            ),
+        ]
+    )
+    db.commit()
+    monkeypatch.setattr(review_bs_nodes, "GetDB", lambda: nullcontext(db))
+    monkeypatch.setattr(
+        review_bs_nodes.xray,
+        "operations",
+        types.SimpleNamespace(
+            remove_user_from_node=lambda *args: None,
+            add_user_to_node=lambda *args: None,
+        ),
+        raising=False,
+    )
+
+    review_bs_nodes.review_bs_nodes()
+
+    blocked_ids = {uid for (uid,) in db.query(NodeUserBlock.user_id).all()}
+    assert blocked_ids == {USER_ID}

@@ -33,7 +33,7 @@ from app.models.proxy import (
     ProxyHostSecurity,
     ProxyTypes,
 )
-from app.models.user import ReminderType, UserDataLimitResetStrategy, UserStatus
+from app.models.user import BsDataLimitResetStrategy, ReminderType, UserDataLimitResetStrategy, UserStatus
 
 host_bot_association = Table(
     "host_bot_association",
@@ -227,6 +227,15 @@ class User(Base):
     legacy_vless_disabled_at = Column(DateTime, nullable=True, default=None)
     # NULL = глобальная база; 0 = БС запрещён; N > 0 = персональная база + bs_extra.
     bs_monthly_limit = Column(BigInteger, nullable=True, default=None)
+    bs_reset_strategy = Column(
+        Enum(BsDataLimitResetStrategy),
+        nullable=False,
+        default=BsDataLimitResetStrategy.month,
+        server_default=text(BsDataLimitResetStrategy.month.value),
+    )
+    # Начало текущего скользящего BS-периода. NULL только у объектов, созданных
+    # напрямую старым кодом; для них helpers временно используют YYYY-MM.
+    bs_last_reset_at = Column(DateTime, nullable=True, default=None)
     bs_extra = Column(BigInteger, nullable=True, default=None)
     bs_extra_period = Column(String(7), nullable=True, default=None)
 
@@ -344,12 +353,17 @@ class User(Base):
 
     @property
     def bs_monthly_used(self) -> int:
-        """Агрегат БС-расхода за текущий месяц из node_user_bs_usage."""
+        """Агрегат БС-расхода за текущий выбранный период из node_user_bs_usage."""
         if self.bs_monthly_limit_total is None:
             return 0
-        from app.xray.bs_limit import aggregate_bs_usage, period_keys
+        from app.xray.bs_limit import aggregate_bs_usage, bs_usage_period
 
-        yyyymm = period_keys(datetime.utcnow())
+        period = bs_usage_period(
+            self.bs_reset_strategy,
+            self.bs_last_reset_at,
+            self.created_at,
+            datetime.utcnow(),
+        )
         totals = aggregate_bs_usage(
             [
                 {
@@ -359,7 +373,7 @@ class User(Base):
                 }
                 for row in (self.node_bs_usages or [])
             ],
-            yyyymm,
+            period,
         )
         return totals.get(self.id, 0)
 
@@ -769,7 +783,9 @@ class NodeUserBsUsage(Base):
     node_id = Column(Integer, ForeignKey("nodes.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     monthly_used = Column(BigInteger, nullable=False, default=0, server_default=text("0"))
-    monthly_period = Column(String(7), nullable=True)  # "YYYY-MM"
+    # Историческое имя колонки сохранено. Теперь это либо legacy "YYYY-MM",
+    # либо ISO-дата начала скользящего периода (до 19 символов).
+    monthly_period = Column(String(32), nullable=True)
     user = relationship("User", back_populates="node_bs_usages")
 
 

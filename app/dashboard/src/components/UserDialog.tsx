@@ -100,7 +100,7 @@ export type UserDialogProps = {};
 
 export type FormType = Omit<UserCreate, "bs_extra" | "bs_monthly_limit"> & {
   selected_proxies: ProxyKeys;
-  /** Персональный месячный БС-лимит в ГБ; null возвращает глобальное поведение */
+  /** Персональный БС-лимит в ГБ за bs_reset_strategy; null возвращает глобальное поведение */
   bs_monthly_limit?: number | null;
   /** Купленный БС-трафик в ГБ (в API уходит как bs_extra в байтах) */
   bs_extra?: number | null;
@@ -116,6 +116,7 @@ interface BotOption {
 const formatUser = (user: User): FormType => {
   return {
     ...user,
+    bs_reset_strategy: user.bs_reset_strategy ?? "month",
     bot_username: user.bot_username ?? "",
     data_limit: user.data_limit
       ? Number((user.data_limit / GIB).toFixed(5))
@@ -153,6 +154,7 @@ const getDefaultValues = (): FormType => {
     expire: null,
     username: "",
     data_limit_reset_strategy: "no_reset",
+    bs_reset_strategy: "month",
     status: "active",
     on_hold_expire_duration: null,
     note: "",
@@ -216,6 +218,7 @@ const baseSchema = {
       return 0;
     }),
   bs_monthly_limit: bsMonthlyLimitGbSchema,
+  bs_reset_strategy: z.enum(["day", "week", "month", "year"]),
   bs_extra: bsExtraGbSchema,
   bs_extra_dirty: z.boolean().optional(),
   device_limit: z
@@ -726,6 +729,38 @@ export const UserDialog: FC<UserDialogProps> = () => {
                           <FormHelperText>
                             {t("userDialog.bsMonthlyLimitHint")}
                           </FormHelperText>
+                        </FormControl>
+                        <FormControl mb={"10px"}>
+                          <FormLabel>{t("userDialog.bsResetStrategy")}</FormLabel>
+                          <Controller
+                            control={form.control}
+                            name="bs_reset_strategy"
+                            render={({ field }) => (
+                              <Select
+                                size="sm"
+                                {...field}
+                                disabled={disabled}
+                                bg={disabled ? "gray.100" : "transparent"}
+                                _dark={{
+                                  bg: disabled ? "gray.600" : "transparent",
+                                }}
+                                sx={{
+                                  option: {
+                                    backgroundColor:
+                                      colorMode === "dark" ? "#222C3B" : "white",
+                                  },
+                                }}
+                              >
+                                {resetStrategy
+                                  .filter((s) => s.value !== "no_reset")
+                                  .map((s) => (
+                                    <option key={s.value} value={s.value}>
+                                      {t("userDialog.resetStrategy" + s.title)}
+                                    </option>
+                                  ))}
+                              </Select>
+                            )}
+                          />
                         </FormControl>
                         {(bsMonthlyLimit == null || bsMonthlyLimit > 0) &&
                           isEditing &&

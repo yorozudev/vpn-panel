@@ -871,6 +871,8 @@ def create_user(db: Session, user: UserCreate, admin: Admin = None) -> User:
         expire=(user.expire or None),
         admin=admin,
         data_limit_reset_strategy=user.data_limit_reset_strategy,
+        bs_reset_strategy=user.bs_reset_strategy,
+        bs_last_reset_at=datetime.utcnow(),
         note=user.note,
         bot=bot,
         on_hold_expire_duration=(user.on_hold_expire_duration or None),
@@ -1024,6 +1026,12 @@ def update_user(db: Session, dbuser: User, modify: UserModify) -> User:
 
     if modify.data_limit_reset_strategy is not None:
         dbuser.data_limit_reset_strategy = modify.data_limit_reset_strategy.value
+
+    # Как у обычного лимита: меняется только длительность, anchor сохраняется.
+    # Поэтому сокращение периода может вызвать ближайший плановый сброс, а
+    # увеличение — отложить его. Текущий расход при смене стратегии не теряется.
+    if modify.bs_reset_strategy is not None:
+        dbuser.bs_reset_strategy = modify.bs_reset_strategy.value
 
     if modify.on_hold_timeout is not None:
         dbuser.on_hold_timeout = modify.on_hold_timeout
@@ -1312,11 +1320,7 @@ def reset_user_data_usage(db: Session, dbuser: User) -> User:
 
     dbuser.used_traffic = 0
     dbuser.node_usages.clear()
-    # Сбрасываем агрегатный БС-счётчик: иначе после reset usages юзер остаётся
-    # над лимитом и review_bs_nodes держит его заблокированным. Блок (node_user_blocks)
-    # снимет сама джоба на следующем тике (≤ JOB_REVIEW_BS_NODES_INTERVAL), заодно
-    # вернув юзера на ноды в xray.
-    db.query(NodeUserBsUsage).filter(NodeUserBsUsage.user_id == dbuser.id).delete(synchronize_session=False)
+    # БС имеет собственный независимый reset strategy и здесь не сбрасывается.
     if dbuser.status not in (UserStatus.expired or UserStatus.disabled):
         dbuser.status = UserStatus.active.value
 
@@ -1446,6 +1450,16 @@ def ensure_subscription_token(db: Session, dbuser: User) -> User:
     return dbuser
 
 
+def reset_user_bs_usage(db: Session, dbuser: User, reset_at: datetime) -> User:
+    """Сброс только базового БС-расхода; лимит и календарный bs_extra сохраняются."""
+    db.query(NodeUserBsUsage).filter(NodeUserBsUsage.user_id == dbuser.id).delete(synchronize_session=False)
+    dbuser.bs_last_reset_at = reset_at.replace(microsecond=0)
+    db.add(dbuser)
+    db.commit()
+    db.refresh(dbuser)
+    return dbuser
+
+
 def reset_all_users_data_usage(db: Session, admin: Admin | None = None):
     """
     Resets the data usage for all users or users under a specific admin.
@@ -1471,12 +1485,7 @@ def reset_all_users_data_usage(db: Session, admin: Admin | None = None):
             dbuser.next_plan = None
         db.add(dbuser)
 
-    # Сбрасываем БС-счётчики этих юзеров — иначе review_bs_nodes держит блок
-    # после массового reset (см. reset_user_data_usage).
-    user_ids = [u.id for u in users]
-    if user_ids:
-        db.query(NodeUserBsUsage).filter(NodeUserBsUsage.user_id.in_(user_ids)).delete(synchronize_session=False)
-
+    # Массовый обычный reset также не затрагивает независимые БС-периоды.
     db.commit()
 
 
@@ -2284,8 +2293,8 @@ def update_node_status(db: Session, dbnode: Node, status: NodeStatus, message: s
     return dbnode
 
 
-def get_bs_usage_totals(db: Session, user_id: int, yyyymm: str) -> int:
-    """Агрегат БС-расхода юзера (сумма по is_bs-нодам) за текущий месяц в байтах."""
+def get_bs_usage_totals(db: Session, user_id: int, period: str) -> int:
+    """Агрегат БС-расхода юзера по is_bs-нодам за указанный период в байтах."""
     from app.xray.bs_limit import aggregate_bs_usage
 
     rows = (
@@ -2304,7 +2313,7 @@ def get_bs_usage_totals(db: Session, user_id: int, yyyymm: str) -> int:
 
     totals = aggregate_bs_usage(
         [{"user_id": r.user_id, "monthly_used": r.monthly_used, "monthly_period": r.monthly_period} for r in rows],
-        yyyymm,
+        period,
     )
     return totals.get(user_id, 0)
 
@@ -2321,7 +2330,8 @@ def get_bs_usage_totals_stale(db: Session, user_id: int, yyyymm: str, since: str
         .filter(
             Node.is_bs.is_(True),
             NodeUserBsUsage.user_id == user_id,
-            NodeUserBsUsage.monthly_period != yyyymm,
+            # Текущий rolling-период тоже может содержать ещё не списанный из
+            # календарной докупки расход. Нижней границы since достаточно.
             NodeUserBsUsage.monthly_period >= since,
         )
         .scalar()
@@ -2367,11 +2377,13 @@ def normalize_bs_extra_period(db: Session, user_id: int, monthly_limit: int, yyy
 def get_bs_state(db: Session, dbuser: User) -> dict[str, int]:
     """Единая точка правды по БС-трафику пользователя. Не пишет в БД."""
     from app.services.panel_settings import get_bs_monthly_limit
-    from app.xray.bs_limit import monthly_effective_limit, period_keys
+    from app.xray.bs_limit import bs_usage_period, monthly_effective_limit, period_keys
 
     user_id = cast(int, dbuser.id)
-    yyyymm = period_keys(datetime.utcnow())
-    monthly_used = get_bs_usage_totals(db, user_id, yyyymm)
+    now = datetime.utcnow()
+    yyyymm = period_keys(now)
+    usage_period = bs_usage_period(dbuser.bs_reset_strategy, dbuser.bs_last_reset_at, dbuser.created_at, now)
+    monthly_used = get_bs_usage_totals(db, user_id, usage_period)
     monthly_limit = (
         int(dbuser.bs_monthly_limit)
         if dbuser.bs_monthly_limit is not None

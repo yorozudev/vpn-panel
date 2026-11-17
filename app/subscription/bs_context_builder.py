@@ -6,7 +6,13 @@ from typing import cast
 from app.db import Session, crud
 from app.db.models import User
 from app.subscription.bs_context import BsContext
-from app.xray.bs_limit import bs_stub_remark, format_bs_usage_suffix, monthly_effective_limit, period_keys
+from app.xray.bs_limit import (
+    bs_stub_remark,
+    bs_usage_period,
+    format_bs_usage_suffix,
+    monthly_effective_limit,
+    period_keys,
+)
 
 
 def build_bs_context(
@@ -36,8 +42,13 @@ def load_bs_usage_suffix(
     personal_limit: int | None = None,
 ) -> str:
     """Суффикс имени БС-хоста. Вызывать только если итоговый лимит > 0."""
-    yyyymm = period_keys(datetime.utcnow())
-    used = crud.get_bs_usage_totals(db, user_id, yyyymm)
+    now = datetime.utcnow()
+    yyyymm = period_keys(now)
+    dbuser = db.query(User).filter(User.id == user_id).first()
+    if dbuser is None:
+        return ""
+    usage_period = bs_usage_period(dbuser.bs_reset_strategy, dbuser.bs_last_reset_at, dbuser.created_at, now)
+    used = crud.get_bs_usage_totals(db, user_id, usage_period)
     base_limit = personal_limit if personal_limit is not None else monthly_limit
     pool = crud.normalize_bs_extra_period(db, user_id, base_limit, yyyymm, persist=False)
     return format_bs_usage_suffix(used, monthly_effective_limit(base_limit, pool))

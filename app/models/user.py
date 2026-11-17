@@ -45,6 +45,15 @@ class UserDataLimitResetStrategy(str, Enum):
     year = "year"
 
 
+class BsDataLimitResetStrategy(str, Enum):
+    """Независимый скользящий период базового БС-лимита."""
+
+    day = "day"
+    week = "week"
+    month = "month"
+    year = "year"
+
+
 class NextPlanModel(BaseModel):
     data_limit: int | None = None
     expire: int | None = None
@@ -60,6 +69,7 @@ class User(BaseModel):
     device_limit: int | None = Field(ge=0, default=None, description="device_limit can be 0 or greater")
     legacy_vless_enabled: bool = True
     data_limit_reset_strategy: UserDataLimitResetStrategy = UserDataLimitResetStrategy.no_reset
+    bs_reset_strategy: BsDataLimitResetStrategy = BsDataLimitResetStrategy.month
     inbounds: dict[ProxyTypes, list[str]] = {}
     note: str | None = Field(None, nullable=True)
     bot_username: str | None = Field(None, nullable=True)
@@ -73,7 +83,7 @@ class User(BaseModel):
     bs_monthly_limit: int | None = Field(
         default=None,
         ge=0,
-        description="Базовый персональный месячный БС-лимит: null — глобальный, 0 — запрет; bs_extra прибавляется",
+        description="Базовый персональный БС-лимит за выбранный период: null — глобальный, 0 — запрет; bs_extra прибавляется",
     )
     bs_extra: int | None = Field(
         default=None, ge=0, description="Доступный сверх базы БС-трафик в текущем месяце (байты)"
@@ -237,6 +247,7 @@ class UserModify(User):
     status: UserStatusModify = None
     legacy_vless_enabled: bool | None = None
     data_limit_reset_strategy: UserDataLimitResetStrategy = None
+    bs_reset_strategy: BsDataLimitResetStrategy = None
     bs_extra: int | None = Field(
         default=None,
         ge=0,

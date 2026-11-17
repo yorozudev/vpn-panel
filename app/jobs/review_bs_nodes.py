@@ -17,7 +17,8 @@ from app.db.models import Node, NodeUserBlock, NodeUserBsUsage, User
 from app.models.user import UserStatus
 from app.services.panel_settings import get_bs_monthly_limit
 from app.xray.bs_limit import (
-    aggregate_bs_usage,
+    aggregate_bs_usage_by_period,
+    bs_usage_period,
     carry_over_pool,
     diff_blocks,
     over_limit_monthly_pool,
@@ -52,7 +53,8 @@ def _effective_pool(bs_extra, extra_period, yyyymm, stale_rows, monthly_limit, p
 
 def review_bs_nodes():
     t0 = time.monotonic()
-    yyyymm = period_keys(datetime.utcnow())
+    now = datetime.utcnow()
+    yyyymm = period_keys(now)
     to_block, to_unblock = set(), set()
 
     with GetDB() as db:
@@ -70,25 +72,13 @@ def review_bs_nodes():
             .all()
         )
 
-        totals = aggregate_bs_usage(
-            [
-                {
-                    "user_id": r.user_id,
-                    "monthly_used": r.monthly_used,
-                    "monthly_period": r.monthly_period,
-                }
-                for r in usage_rows
-            ],
-            yyyymm,
-        )
-
-        # Персональный 0 блокирует даже без строк расхода. Поэтому проверяем и всех
-        # пользователей с override, а не только присутствующих в текущем usage.
+        # Персональный 0 блокирует даже без строк расхода. А старые строки тоже
+        # включаем в список: после rolling reset пользователь должен разблокироваться.
         override_user_ids = {
             uid
             for (uid,) in db.query(User.id).filter(User.bs_monthly_limit.is_not(None)).all()
         }
-        user_ids = list(totals.keys() | override_user_ids)
+        user_ids = list({r.user_id for r in usage_rows} | override_user_ids)
         stale_rows = (
             db.query(
                 NodeUserBsUsage.user_id,
@@ -98,7 +88,6 @@ def review_bs_nodes():
             .filter(
                 NodeUserBsUsage.node_id.in_(bs_node_ids),
                 NodeUserBsUsage.user_id.in_(user_ids),
-                NodeUserBsUsage.monthly_period != yyyymm,
             )
             .group_by(NodeUserBsUsage.user_id, NodeUserBsUsage.monthly_period)
             .all()
@@ -112,9 +101,22 @@ def review_bs_nodes():
         monthly_limit = get_bs_monthly_limit(db)
         user_info = (
             {
-                uid: (personal_limit, bs_extra or 0, bs_extra_period)
-                for uid, personal_limit, bs_extra, bs_extra_period in db.query(
-                    User.id, User.bs_monthly_limit, User.bs_extra, User.bs_extra_period
+                r.id: {
+                    "personal_limit": r.bs_monthly_limit,
+                    "bs_extra": r.bs_extra or 0,
+                    "extra_period": r.bs_extra_period,
+                    "usage_period": bs_usage_period(
+                        r.bs_reset_strategy, r.bs_last_reset_at, r.created_at, now
+                    ),
+                }
+                for r in db.query(
+                    User.id,
+                    User.bs_monthly_limit,
+                    User.bs_extra,
+                    User.bs_extra_period,
+                    User.bs_reset_strategy,
+                    User.bs_last_reset_at,
+                    User.created_at,
                 )
                 .filter(User.id.in_(user_ids))
                 .all()
@@ -122,10 +124,26 @@ def review_bs_nodes():
             if user_ids
             else {}
         )
+        totals = aggregate_bs_usage_by_period(
+            [
+                {
+                    "user_id": r.user_id,
+                    "monthly_used": r.monthly_used,
+                    "monthly_period": r.monthly_period,
+                }
+                for r in usage_rows
+            ],
+            {uid: info["usage_period"] for uid, info in user_info.items()},
+        )
 
         over_users = set()
         for uid in user_ids:
-            personal_limit, bs_extra, extra_period = user_info.get(uid, (None, 0, None))
+            info = user_info.get(uid)
+            if info is None:
+                continue
+            personal_limit = info["personal_limit"]
+            bs_extra = info["bs_extra"]
+            extra_period = info["extra_period"]
             monthly_used = totals.get(uid, 0)
             # В отличие от глобального 0 (лимит не задан), персональный 0 — запрет.
             if personal_limit == 0:

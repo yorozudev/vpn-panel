@@ -32,6 +32,11 @@ export type DataLimitResetStrategy =
   | "month"
   | "year";
 
+export type BsDataLimitResetStrategy = Exclude<
+  DataLimitResetStrategy,
+  "no_reset"
+>;
+
 export type UserInbounds = {
   [key: string]: string[];
 };
@@ -40,6 +45,7 @@ export type User = {
   expire: number | null;
   data_limit: number | null;
   data_limit_reset_strategy: DataLimitResetStrategy;
+  bs_reset_strategy: BsDataLimitResetStrategy;
   device_limit: number | null;
   on_hold_expire_duration: number | null;
   lifetime_used_traffic: number;
@@ -69,6 +75,7 @@ export type UserCreate = Pick<
   | "bs_monthly_limit"
   | "device_limit"
   | "data_limit_reset_strategy"
+  | "bs_reset_strategy"
   | "on_hold_expire_duration"
   | "username"
   | "status"

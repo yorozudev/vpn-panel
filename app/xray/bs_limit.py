@@ -4,21 +4,59 @@
 """
 
 
+
+BS_RESET_STRATEGY_TO_DAYS = {
+    "day": 1,
+    "week": 7,
+    "month": 30,
+    "year": 365,
+}
+
+
 def period_keys(now):
-    """Маркер месяца счётчика 'YYYY-MM' — ленивый сброс при смене месяца."""
+    """Календарный месяц докупки bs_extra; период базового лимита не использует его."""
     return now.strftime("%Y-%m")
 
 
-def bs_counter_step(existing, delta, yyyymm):
-    """Новые значения счётчика с ленивым сбросом месяца.
+def _strategy_value(strategy):
+    return getattr(strategy, "value", strategy) or "month"
+
+
+def bs_period_anchor(last_reset_at, created_at):
+    return last_reset_at or created_at
+
+
+def bs_usage_period(strategy, last_reset_at, created_at, now):
+    """Стабильный маркер текущего BS-периода пользователя.
+
+    Период начинается с последнего сброса, как и обычный traffic reset. Старые
+    объекты без anchor продолжают читать legacy-счётчик YYYY-MM до первого сброса.
+    """
+    anchor = bs_period_anchor(last_reset_at, created_at)
+    if last_reset_at is None:
+        return period_keys(now)
+    return anchor.isoformat(timespec="seconds")
+
+
+def bs_reset_due(strategy, last_reset_at, created_at, now):
+    """Те же rolling day/week/month/year и правило `.days`, что у обычного reset."""
+    anchor = bs_period_anchor(last_reset_at, created_at)
+    if anchor is None:
+        return False
+    days = BS_RESET_STRATEGY_TO_DAYS[_strategy_value(strategy)]
+    return (now - anchor).days >= days
+
+
+def bs_counter_step(existing, delta, period):
+    """Новые значения счётчика с ленивым сбросом выбранного периода.
 
     existing — dict с ключами monthly_used/monthly_period либо None (строки ещё нет).
     """
     existing = existing or {}
-    monthly_base = existing.get("monthly_used", 0) if existing.get("monthly_period") == yyyymm else 0
+    monthly_base = existing.get("monthly_used", 0) if existing.get("monthly_period") == period else 0
     return {
         "monthly_used": monthly_base + delta,
-        "monthly_period": yyyymm,
+        "monthly_period": period,
     }
 
 
@@ -27,15 +65,26 @@ def diff_blocks(desired, current):
     return desired - current, current - desired
 
 
-def aggregate_bs_usage(rows, yyyymm):
+def aggregate_bs_usage(rows, period):
     """rows: iterable of dict(user_id, monthly_used, monthly_period).
-    → {user_id: monthly_used}, считая только актуальный месяц."""
+    → {user_id: monthly_used}, считая только актуальный период."""
     totals = {}
     for r in rows:
-        if r.get("monthly_period") != yyyymm:
+        if r.get("monthly_period") != period:
             continue
         uid = r["user_id"]
         totals[uid] = totals.get(uid, 0) + (r.get("monthly_used") or 0)
+    return totals
+
+
+def aggregate_bs_usage_by_period(rows, periods):
+    """Агрегат для пользователей с разными стратегиями в одном batch."""
+    totals = {}
+    for row in rows:
+        uid = row["user_id"]
+        if row.get("monthly_period") != periods.get(uid):
+            continue
+        totals[uid] = totals.get(uid, 0) + (row.get("monthly_used") or 0)
     return totals
 
 

@@ -16,7 +16,7 @@ from app.db.models import Admin, BotBsDaily, Node, NodeUsage, NodeUserBsUsage, N
 from app.services.entry_routes import collect_entry_routes
 from app.services.node_realtime import get_route_observations, set_nodes_online
 from app.utils.concurrency import get_xray_executor
-from app.xray.bs_limit import bs_counter_step, period_keys
+from app.xray.bs_limit import bs_counter_step, bs_usage_period, period_keys
 from app.xray.device_credentials import parse_xray_identity
 from app.xray.route_online import build_routed_online, identity_of
 from config import (
@@ -176,7 +176,8 @@ def record_bs_user_stats(params: list, node_id: int, consumption_factor: int = 1
     if not params:
         return
 
-    yyyymm = period_keys(datetime.utcnow())
+    now = datetime.utcnow()
+    yyyymm = period_keys(now)
 
     with GetDB() as db:
         deltas = {}
@@ -203,6 +204,15 @@ def record_bs_user_stats(params: list, node_id: int, consumption_factor: int = 1
                 "monthly_period": r.monthly_period,
             }
             for r in existing_rows
+        }
+        period_rows = (
+            db.query(User.id, User.bs_reset_strategy, User.bs_last_reset_at, User.created_at)
+            .filter(User.id.in_(uids))
+            .all()
+        )
+        usage_periods = {
+            r.id: bs_usage_period(r.bs_reset_strategy, r.bs_last_reset_at, r.created_at, now)
+            for r in period_rows
         }
 
         # Одним запросом отбираем только тех, у кого период пула реально отстал:
@@ -231,7 +241,10 @@ def record_bs_user_stats(params: list, node_id: int, consumption_factor: int = 1
 
         to_insert, to_update = [], []
         for uid, delta in deltas.items():
-            vals = bs_counter_step(existing.get(uid), delta, yyyymm)
+            # Пользователь мог быть удалён между Stats API snapshot и записью.
+            if uid not in usage_periods:
+                continue
+            vals = bs_counter_step(existing.get(uid), delta, usage_periods[uid])
             if uid in existing:
                 to_update.append({"uid": uid, **vals})
             else:
@@ -262,7 +275,7 @@ def record_bs_user_stats(params: list, node_id: int, consumption_factor: int = 1
         # NPVPN-2044: тот же тик пишет суточный агрегат по ботам — одной
         # транзакцией с инкрементом, чтобы расход не мог попасть в одну таблицу
         # и потеряться в другой.
-        record_bot_bs_daily(db, node_id, deltas, datetime.utcnow().date(), billable)
+        record_bot_bs_daily(db, node_id, deltas, now.date(), billable)
 
         db.commit()
 
