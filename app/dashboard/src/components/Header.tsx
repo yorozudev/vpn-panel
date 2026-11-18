@@ -21,6 +21,7 @@ import {
   DocumentMinusIcon,
   LinkIcon,
   MoonIcon,
+  SignalIcon,
   SquaresPlusIcon,
   SunIcon,
   WrenchScrewdriverIcon,
@@ -54,6 +55,7 @@ const DonationIcon = chakra(CurrencyDollarIcon, iconProps);
 const HostsIcon = chakra(LinkIcon, iconProps);
 const NodesIcon = chakra(SquaresPlusIcon, iconProps);
 const NodesUsageIcon = chakra(ChartPieIcon, iconProps);
+const NodesRealtimeIcon = chakra(SignalIcon, iconProps);
 const ResetUsageIcon = chakra(DocumentMinusIcon, iconProps);
 const BotSettingsIcon = chakra(WrenchScrewdriverIcon, iconProps);
 const PanelSettingsIcon = chakra(AdjustmentsHorizontalIcon, iconProps);
@@ -76,6 +78,7 @@ export const Header: FC<HeaderProps> = ({ actions }) => {
     onEditingAppSettings,
     onEditingPanelSettings,
     onShowingNodesUsage,
+    onShowingNodesRealtime,
   } = useDashboard();
   const { t } = useTranslation();
   const { colorMode, toggleColorMode } = useColorMode();
@@ -127,6 +130,14 @@ export const Header: FC<HeaderProps> = ({ actions }) => {
                     onClick={onEditingNodes.bind(null, true)}
                   >
                     {t("header.nodeSettings")}
+                  </MenuItem>
+                  <MenuItem
+                    maxW="200px"
+                    fontSize="sm"
+                    icon={<NodesRealtimeIcon />}
+                    onClick={onShowingNodesRealtime.bind(null, true)}
+                  >
+                    {t("header.nodesRealtime")}
                   </MenuItem>
                   <MenuItem
                     maxW="200px"

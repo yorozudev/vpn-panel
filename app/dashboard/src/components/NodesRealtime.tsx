@@ -168,7 +168,9 @@ const NodeRealtimeCard: FC<{
   );
 };
 
-export const NodesRealtime: FC = () => {
+export const NodesRealtime: FC<{ showHeader?: boolean }> = ({
+  showHeader = true,
+}) => {
   const { userData, getUserIsSuccess } = useGetUser();
   const isSudo = getUserIsSuccess && userData.is_sudo;
   const { data: nodes, isLoading } = useNodesQuery();
@@ -180,15 +182,17 @@ export const NodesRealtime: FC = () => {
   const byNodeId = new Map(realtime?.map((item) => [item.node_id, item]));
 
   return (
-    <Box as="section" w="full" mt={4}>
-      <HStack justifyContent="space-between" mb={3}>
-        <Text fontSize="lg" fontWeight="semibold">
-          {t("nodesRealtime.title", { defaultValue: "Мониторинг нод" })}
-        </Text>
-        <Text fontSize="xs" color="gray.500">
-          {t("nodesRealtime.interval", { defaultValue: "Обновление каждые 10 секунд" })}
-        </Text>
-      </HStack>
+    <Box as="section" w="full" mt={showHeader ? 4 : 0}>
+      {showHeader && (
+        <HStack justifyContent="space-between" mb={3}>
+          <Text fontSize="lg" fontWeight="semibold">
+            {t("nodesRealtime.title")}
+          </Text>
+          <Text fontSize="xs" color="gray.500">
+            {t("nodesRealtime.interval")}
+          </Text>
+        </HStack>
+      )}
       <SimpleGrid columns={{ base: 1, md: 2, xl: 3 }} spacing={4}>
         {nodes.map((node) => (
           <NodeRealtimeCard

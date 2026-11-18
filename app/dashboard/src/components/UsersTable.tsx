@@ -131,7 +131,7 @@ const BsTrafficUsage: FC<{
   const props = {
     used,
     total,
-    dataLimitResetStrategy: "month" as const,
+    dataLimitResetStrategy: user.bs_reset_strategy ?? "month",
     totalUsedTraffic: used,
     colorScheme,
     label: showLabel ? t("usersTable.bsDataUsage") : undefined,
