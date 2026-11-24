@@ -3,17 +3,22 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from copy import deepcopy
+from datetime import datetime
 from pathlib import PosixPath
 
 import commentjson
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from app.db import GetDB
 from app.db import models as db_models
 from app.models.proxy import ProxyTypes
 from app.models.user import UserStatus
 from app.utils.crypto import get_cert_SANs
-from app.xray.device_credentials import device_email
+from app.xray.device_credentials import (
+    active_device_credentials,
+    device_email,
+    previous_device_email,
+)
 from app.xray.node_config import _NodeJsonCache, inline_local_certificates
 from app.xray.xhttp_extra import inbound_xhttp_extra
 from config import DEBUG, XRAY_EXCLUDE_INBOUND_TAGS, XRAY_FALLBACKS_INBOUND_TAG
@@ -370,18 +375,27 @@ class XRayConfig(dict):
                     db_models.UserDevice.user_id,
                     db_models.UserDevice.id,
                     db_models.UserDevice.vless_uuid,
+                    db_models.UserDevice.vless_uuid_expires_at,
+                    db_models.UserDevice.previous_vless_uuid,
+                    db_models.UserDevice.previous_vless_uuid_expires_at,
+                    db_models.UserDevice.status,
                 )
                 .join(db_models.User, db_models.User.id == db_models.UserDevice.user_id)
                 .filter(
                     db_models.User.status.in_([UserStatus.active, UserStatus.on_hold]),
                     db_models.UserDevice.status == "active",
-                    db_models.UserDevice.vless_uuid.isnot(None),
+                    or_(
+                        db_models.UserDevice.vless_uuid.isnot(None),
+                        db_models.UserDevice.previous_vless_uuid.isnot(None),
+                    ),
                 )
                 .all()
             )
             devices_by_user = defaultdict(list)
+            credential_now = datetime.utcnow()
             for device_row in device_rows:
-                devices_by_user[device_row.user_id].append((device_row.id, device_row.vless_uuid))
+                for credential, previous in active_device_credentials(device_row, credential_now):
+                    devices_by_user[device_row.user_id].append((device_row.id, credential, previous))
 
             grouped_data = defaultdict(list)
 
@@ -427,9 +441,10 @@ class XRayConfig(dict):
                             clients.append(client)
 
                         if proxy_type == "vless":
-                            for device_id, device_uuid in devices_by_user.get(user_id, []):
+                            for device_id, device_uuid, previous in devices_by_user.get(user_id, []):
+                                email_factory = previous_device_email if previous else device_email
                                 device_client = {
-                                    "email": device_email(user_id, device_id, username),
+                                    "email": email_factory(user_id, device_id, username),
                                     **settings,
                                     "id": device_uuid,
                                 }

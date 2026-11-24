@@ -68,6 +68,11 @@ from app.utils.helpers import calculate_expiration_days, calculate_usage_percent
 from app.utils.jwt import create_subscription_token
 from app.xray.address_policy import WEIGHT_SNAPSHOT_MAX_AGE_DAYS
 from app.xray.cascade_keys import generate_cascade_identity
+from app.xray.device_credentials import (
+    DEVICE_VLESS_UUID_GRACE,
+    DEVICE_VLESS_UUID_ROTATE_BEFORE,
+    DEVICE_VLESS_UUID_TTL,
+)
 from config import (
     HOSTING_USAGE_CUTOFF_PERCENT,
     NOTIFY_DAYS_LEFT,
@@ -1128,14 +1133,44 @@ def get_user_device_by_hwid(db: Session, dbuser: User, hwid: str) -> UserDevice 
     return db.query(UserDevice).filter(UserDevice.user_id == dbuser.id, UserDevice.hwid == hwid).first()
 
 
-def ensure_user_device_vless_uuid(db: Session, dbdevice: UserDevice) -> tuple[str, bool]:
-    """Вернуть постоянный UUID устройства и признак его первого создания."""
-    if dbdevice.vless_uuid:
-        return cast(str, dbdevice.vless_uuid), False
+def ensure_user_device_vless_uuid(
+    db: Session,
+    dbdevice: UserDevice,
+    now: datetime | None = None,
+) -> tuple[str, Literal["unchanged", "created", "rotated"]]:
+    """Вернуть UUID с TTL 48 часов, при необходимости атомарно сменив его в БД.
+
+    UUID не продлевается при обычном refresh подписки: иначе скопированный конфиг
+    жил бы вечно вместе с легитимным устройством. Ротация происходит за 6 часов
+    до истечения, чтобы Happ успел получить новый конфиг при штатном обновлении.
+    """
+    now = now or datetime.utcnow()
+    current = cast(str | None, dbdevice.vless_uuid)
+    expires_at = cast(datetime | None, dbdevice.vless_uuid_expires_at)
+
+    if current and expires_at is not None and expires_at - now > DEVICE_VLESS_UUID_ROTATE_BEFORE:
+        return current, "unchanged"
+
+    if current and expires_at is None:
+        # Запасной путь для строк, созданных до миграции вне штатного upgrade.
+        dbdevice.vless_uuid_expires_at = now + DEVICE_VLESS_UUID_TTL
+        db.commit()
+        db.refresh(dbdevice)
+        return current, "unchanged"
+
+    if current and expires_at is not None and expires_at > now:
+        dbdevice.previous_vless_uuid = current
+        # Старый UUID никогда не живёт дольше исходного срока или 30-минутного grace.
+        dbdevice.previous_vless_uuid_expires_at = min(expires_at, now + DEVICE_VLESS_UUID_GRACE)
+    else:
+        dbdevice.previous_vless_uuid = None
+        dbdevice.previous_vless_uuid_expires_at = None
+
     dbdevice.vless_uuid = str(uuid4())
+    dbdevice.vless_uuid_expires_at = now + DEVICE_VLESS_UUID_TTL
     db.commit()
     db.refresh(dbdevice)
-    return cast(str, dbdevice.vless_uuid), True
+    return cast(str, dbdevice.vless_uuid), "created" if current is None else "rotated"
 
 
 def count_user_devices(db: Session, dbuser: User) -> int:

@@ -441,6 +441,7 @@ class UserDeviceResponse(UserDeviceBase):
     last_seen: datetime
     last_ip: str | None = None
     vless_config_delivered_at: datetime | None = None
+    vless_uuid_expires_at: datetime | None = None
     model_config = ConfigDict(from_attributes=True)
 
 

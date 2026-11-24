@@ -66,13 +66,17 @@ def _apply_device_vless_credential(
     if not hasattr(vless_proxy, "model_copy"):
         # Совместимость с облегчёнными subscription-объектами внешних модулей.
         return user
-    credential, created = crud.ensure_user_device_vless_uuid(db, dbdevice)
-    if created:
+    credential, change = crud.ensure_user_device_vless_uuid(db, dbdevice)
+    if change != "unchanged":
         # Стартовые конфиги тоже содержат devices; этот вызов нужен для доступа
-        # без ожидания перезапуска Xray. Старый общий UUID не отзывается.
+        # без ожидания перезапуска Xray. При ротации прежний UUID сохраняется
+        # на grace-period под временным email с тем же device_id.
         from app import xray
 
-        xray.operations.add_device(dbuser, dbdevice)
+        if change == "rotated":
+            xray.operations.rotate_device(dbuser, dbdevice)
+        else:
+            xray.operations.add_device(dbuser, dbdevice)
     if dbdevice.vless_config_delivered_at is None:
         # Фиксируем первую выдачу, а не hourly refresh: иначе grace period никогда
         # не закончится у регулярно обновляющих подписку клиентов.

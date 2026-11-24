@@ -12,7 +12,11 @@ from app.models.node import NodeStatus
 from app.models.proxy import ProxyTypes
 from app.models.user import UserResponse
 from app.utils.concurrency import threaded_function
-from app.xray.device_credentials import device_email
+from app.xray.device_credentials import (
+    active_device_credentials,
+    device_email,
+    previous_device_email,
+)
 from app.xray.node import XRayNode
 from app.xray.node_config import node_config_json, node_has_inbound
 from config import (
@@ -183,14 +187,24 @@ def _active_device_credentials(dbuser) -> list:
         # Detached ORM-пользователь без заранее загруженных devices: legacy
         # синхронизацию не роняем, startup/include_db_users восстановит devices.
         return []
-    return [device for device in devices if device.status == "active" and device.vless_uuid]
+    now = datetime.utcnow()
+    return [device for device in devices if active_device_credentials(device, now)]
 
 
-def _device_account(user: UserResponse, dbuser, dbdevice, inbound: dict) -> Account:
+def _device_account(
+    user: UserResponse,
+    dbuser,
+    dbdevice,
+    inbound: dict,
+    *,
+    credential: str | None = None,
+    previous: bool = False,
+) -> Account:
     proxy_settings = user.proxies[ProxyTypes.VLESS].dict(no_obj=True)
-    proxy_settings["id"] = dbdevice.vless_uuid
+    proxy_settings["id"] = credential or dbdevice.vless_uuid
+    email_factory = previous_device_email if previous else device_email
     account = ProxyTypes.VLESS.account_model(
-        email=device_email(dbuser.id, dbdevice.id, dbuser.username),
+        email=email_factory(dbuser.id, dbdevice.id, dbuser.username),
         **proxy_settings,
     )
     if getattr(account, "flow", None) and (
@@ -200,6 +214,27 @@ def _device_account(user: UserResponse, dbuser, dbdevice, inbound: dict) -> Acco
     ):
         account.flow = XTLSFlows.NONE
     return account
+
+
+def _device_accounts(user: UserResponse, dbuser, dbdevice, inbound: dict) -> list[Account]:
+    return [
+        _device_account(
+            user,
+            dbuser,
+            dbdevice,
+            inbound,
+            credential=credential,
+            previous=previous,
+        )
+        for credential, previous in active_device_credentials(dbdevice, datetime.utcnow())
+    ]
+
+
+def _device_emails(dbuser, dbdevice) -> list[str]:
+    return [
+        device_email(dbuser.id, dbdevice.id, dbuser.username),
+        previous_device_email(dbuser.id, dbdevice.id, dbuser.username),
+    ]
 
 
 def add_device(dbuser, dbdevice) -> None:
@@ -212,16 +247,45 @@ def add_device(dbuser, dbdevice) -> None:
     ready_nodes = _get_ready_nodes()
     for inbound_tag in user.inbounds.get(ProxyTypes.VLESS, []):
         inbound = xray.config.inbounds_by_tag.get(inbound_tag, {})
-        account = _device_account(user, dbuser, dbdevice, inbound)
-        _add_user_to_inbound(xray.api, inbound_tag, account)
-        for node in ready_nodes:
-            if _node_has_inbound(node, inbound_tag):
-                _add_user_to_inbound(node.api, inbound_tag, account)
+        for account in _device_accounts(user, dbuser, dbdevice, inbound):
+            _add_user_to_inbound(xray.api, inbound_tag, account)
+            for node in ready_nodes:
+                if _node_has_inbound(node, inbound_tag):
+                    _add_user_to_inbound(node.api, inbound_tag, account)
 
 
-def remove_device(dbuser, dbdevice) -> None:
-    """Отозвать device identity во всех VLESS inbounds, включая старые назначения."""
-    email = device_email(dbuser.id, dbdevice.id, dbuser.username)
+def rotate_device(dbuser, dbdevice) -> None:
+    """Атомарно для клиента заменить UUID, сохранив previous на grace-period."""
+    if not dbdevice.vless_uuid or dbdevice.status != "active":
+        return
+    user = _user_response(dbuser)
+    if ProxyTypes.VLESS not in user.proxies:
+        return
+    ready_nodes = _get_ready_nodes()
+    for inbound_tag in user.inbounds.get(ProxyTypes.VLESS, []):
+        inbound = xray.config.inbounds_by_tag.get(inbound_tag, {})
+        accounts = _device_accounts(user, dbuser, dbdevice, inbound)
+        # Сначала previous под тем же старым UUID, затем current с новым.
+        accounts.sort(key=lambda account: ".previous." not in account.email)
+        for account in accounts:
+            _alter_inbound_user(xray.api, inbound_tag, account)
+            for node in ready_nodes:
+                if _node_has_inbound(node, inbound_tag):
+                    _alter_inbound_user(node.api, inbound_tag, account)
+        if not dbdevice.previous_vless_uuid:
+            # После истечения старого UUID grace не возобновляется.
+            for api in [xray.api, *(node.api for node in ready_nodes if _node_has_inbound(node, inbound_tag))]:
+                _remove_user_from_inbound(
+                    api,
+                    inbound_tag,
+                    previous_device_email(dbuser.id, dbdevice.id, dbuser.username),
+                )
+
+
+def remove_device_credential(dbuser, dbdevice, *, previous: bool) -> None:
+    """Удалить current либо previous identity после истечения её срока."""
+    email_factory = previous_device_email if previous else device_email
+    email = email_factory(dbuser.id, dbdevice.id, dbuser.username)
     vless_inbounds = xray.config.inbounds_by_protocol.get("vless", [])
     inbound_tags = [inbound["tag"] for inbound in vless_inbounds] or list(xray.config.inbounds_by_tag)
     ready_nodes = _get_ready_nodes()
@@ -230,6 +294,12 @@ def remove_device(dbuser, dbdevice) -> None:
         for node in ready_nodes:
             if _node_has_inbound(node, inbound_tag):
                 _remove_user_from_inbound(node.api, inbound_tag, email)
+
+
+def remove_device(dbuser, dbdevice) -> None:
+    """Отозвать current и previous identity, включая старые назначения."""
+    for previous in (False, True):
+        remove_device_credential(dbuser, dbdevice, previous=previous)
 
 
 def remove_legacy_vless(dbuser) -> None:
@@ -276,8 +346,9 @@ def add_user(dbuser: "DBUser"):
             accounts = [] if proxy_type == ProxyTypes.VLESS and not dbuser.legacy_vless_enabled else [account]
             if proxy_type == ProxyTypes.VLESS:
                 accounts.extend(
-                    _device_account(user, dbuser, device, inbound)
+                    account
                     for device in _active_device_credentials(dbuser)
+                    for account in _device_accounts(user, dbuser, device, inbound)
                 )
             for identity_account in accounts:
                 _add_user_to_inbound(xray.api, inbound_tag, identity_account)  # main core
@@ -333,7 +404,11 @@ def remove_user(dbuser: "DBUser"):
     ready_nodes = _get_ready_nodes()
     logger.info(f"[xray.remove_user] nodes_ready={len(ready_nodes)} nodes_total={total_nodes}")
 
-    emails = [email] + [device_email(dbuser.id, device.id, dbuser.username) for device in _active_device_credentials(dbuser)]
+    emails = [email] + [
+        identity_email
+        for device in _active_device_credentials(dbuser)
+        for identity_email in _device_emails(dbuser, device)
+    ]
     for inbound_tag in target_inbounds:
         for identity_email in emails:
             _remove_user_from_inbound(xray.api, inbound_tag, identity_email)
@@ -387,8 +462,9 @@ def update_user(dbuser: "DBUser"):
                 _remove_user_from_inbound(xray.api, inbound_tag, email)
             if proxy_type == ProxyTypes.VLESS:
                 accounts.extend(
-                    _device_account(user, dbuser, device, inbound)
+                    account
                     for device in _active_device_credentials(dbuser)
+                    for account in _device_accounts(user, dbuser, device, inbound)
                 )
             for identity_account in accounts:
                 _alter_inbound_user(xray.api, inbound_tag, identity_account)  # main core
@@ -411,8 +487,9 @@ def update_user(dbuser: "DBUser"):
             continue
         # remove disabled inbounds, including per-device VLESS identities
         emails = [email] + [
-            device_email(dbuser.id, device.id, dbuser.username)
+            identity_email
             for device in _active_device_credentials(dbuser)
+            for identity_email in _device_emails(dbuser, device)
         ]
         for identity_email in emails:
             _remove_user_from_inbound(xray.api, inbound_tag, identity_email)
@@ -467,7 +544,11 @@ def remove_user_from_node(dbuser: "DBUser", node_id: int):
         return  # нода не подключена — фильтрация стартового конфига снимет её при connect
     email = f"{dbuser.id}.{dbuser.username}"
     user = UserResponse.model_validate(dbuser)
-    emails = [email] + [device_email(dbuser.id, device.id, dbuser.username) for device in _active_device_credentials(dbuser)]
+    emails = [email] + [
+        identity_email
+        for device in _active_device_credentials(dbuser)
+        for identity_email in _device_emails(dbuser, device)
+    ]
     for inbound_tag in _user_inbound_tags(user):
         if not _node_has_inbound(node, inbound_tag):
             continue
@@ -511,8 +592,9 @@ def add_user_to_node(dbuser: "DBUser", node_id: int):
             accounts = [] if proxy_type == ProxyTypes.VLESS and not dbuser.legacy_vless_enabled else [account]
             if proxy_type == ProxyTypes.VLESS:
                 accounts.extend(
-                    _device_account(user, dbuser, device, inbound)
+                    account
                     for device in _active_device_credentials(dbuser)
+                    for account in _device_accounts(user, dbuser, device, inbound)
                 )
             for identity_account in accounts:
                 try:

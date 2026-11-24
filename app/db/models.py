@@ -433,6 +433,11 @@ class UserDevice(Base):
     status = Column(String(16), nullable=False, default="active", server_default="active")
     # Отдельный VLESS UUID устройства. NULL — legacy/general subscription UUID.
     vless_uuid = Column(String(36), nullable=True, default=None)
+    # Текущий UUID действует максимум 48 часов. Предыдущий хранится отдельно
+    # только на короткий grace-period после ротации.
+    vless_uuid_expires_at = Column(DateTime, nullable=True, default=None)
+    previous_vless_uuid = Column(String(36), nullable=True, default=None)
+    previous_vless_uuid_expires_at = Column(DateTime, nullable=True, default=None)
     # Момент формирования подписки с этим UUID. Это не подтверждение применения
     # конфига клиентом, поэтому отдельно действует migration grace period.
     vless_config_delivered_at = Column(DateTime, nullable=True, default=None)

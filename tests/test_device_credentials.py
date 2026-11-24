@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 import types
 from contextlib import nullcontext
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import Mock
 from uuid import UUID, uuid4
 
@@ -32,6 +32,7 @@ from app.xray.device_credentials import (
     device_email,
     online_counts,
     parse_xray_identity,
+    previous_device_email,
 )
 
 
@@ -165,6 +166,37 @@ def test_three_devices_get_stable_distinct_uuids_and_pass_limit(db, add_device):
     assert get_user_device_by_hwid(db, dbuser, "hwid-0").vless_config_delivered_at == first_delivery
     assert add_device.call_count == 3
     assert all(result[2:] == (False, False, False) for result in [*results, again])
+
+
+def test_near_expiry_subscription_rotates_uuid_and_keeps_old_for_grace(db, add_device, monkeypatch):
+    first = resolve(db, add_device, "hwid-rotate")
+    original = first[0].proxies["vless"].id
+    dbuser = db.query(User).filter(User.id == 42).one()
+    device = get_user_device_by_hwid(db, dbuser, "hwid-rotate")
+    device.vless_uuid_expires_at = datetime.utcnow() + timedelta(hours=1)
+    db.commit()
+    rotate = Mock()
+    monkeypatch.setattr(
+        sys.modules["app.xray"].operations,
+        "rotate_device",
+        rotate,
+        raising=False,
+    )
+
+    renewed = resolve(db, add_device, "hwid-rotate")
+    db.refresh(device)
+
+    assert renewed[0].proxies["vless"].id != original
+    assert device.previous_vless_uuid == str(original)
+    assert device.previous_vless_uuid_expires_at is not None
+    assert device.vless_uuid_expires_at > datetime.utcnow() + timedelta(hours=47)
+    rotate.assert_called_once()
+
+    # Повторный refresh сразу после ротации возвращает тот же новый UUID.
+    current = renewed[0].proxies["vless"].id
+    again = resolve(db, add_device, "hwid-rotate")
+    assert again[0].proxies["vless"].id == current
+    assert rotate.call_count == 1
 
 
 def test_new_device_over_hard_limit_gets_no_credential(db, add_device):
@@ -336,4 +368,49 @@ def test_live_xray_add_and_revoke_use_device_identity(db, monkeypatch):
     assert str(account.id) == str(credential)
 
     operations.remove_device(dbuser, device)
-    assert remove.call_args.args[2] == device_email(42, device.id, "device_user")
+    assert [call.args[2] for call in remove.call_args_list[-2:]] == [
+        device_email(42, device.id, "device_user"),
+        previous_device_email(42, device.id, "device_user"),
+    ]
+
+
+def test_live_xray_rotation_alters_previous_before_current(db, monkeypatch):
+    from app.xray import operations
+
+    current = uuid4()
+    previous = uuid4()
+    now = datetime.utcnow()
+    db.add(Proxy(user_id=42, type=ProxyTypes.VLESS, settings={"id": str(uuid4()), "flow": ""}))
+    device = UserDevice(
+        user_id=42,
+        hwid="rotate-live",
+        status="active",
+        vless_uuid=str(current),
+        vless_uuid_expires_at=now + timedelta(hours=48),
+        previous_vless_uuid=str(previous),
+        previous_vless_uuid_expires_at=now + timedelta(minutes=30),
+    )
+    db.add(device)
+    db.commit()
+    db.refresh(device)
+    dbuser = db.query(User).filter(User.id == 42).one()
+    config = types.SimpleNamespace(
+        inbounds_by_tag={"VLESS_TCP_REALITY": {"network": "tcp", "tls": "reality"}},
+        inbounds_by_protocol={"vless": [{"tag": "VLESS_TCP_REALITY"}]},
+    )
+    monkeypatch.setattr(operations.xray, "config", config, raising=False)
+    monkeypatch.setattr(operations.xray, "api", object(), raising=False)
+    monkeypatch.setattr(operations.xray, "nodes", {}, raising=False)
+    monkeypatch.setattr(operations, "_get_ready_nodes", lambda: [])
+    alter = Mock()
+    monkeypatch.setattr(operations, "_alter_inbound_user", alter)
+
+    operations.rotate_device(dbuser, device)
+
+    accounts = [call.args[2] for call in alter.call_args_list]
+    assert [account.email for account in accounts] == [
+        previous_device_email(42, device.id, "device_user"),
+        device_email(42, device.id, "device_user"),
+    ]
+    assert [str(account.id) for account in accounts] == [str(previous), str(current)]
+    assert parse_xray_identity(accounts[0].email) == parse_xray_identity(accounts[1].email)

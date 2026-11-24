@@ -1,15 +1,48 @@
-"""Идентификаторы per-device VLESS и подсчёт realtime online.
+"""Идентификаторы per-device VLESS, TTL и подсчёт realtime online.
 
 Email остаётся совместимым с учётом Marzban: префикс ``<uid>.`` по-прежнему
 ведёт к владельцу подписки. Маркер ``d<device_id>`` отличает устройство от
-legacy identity ``<uid>.<username>``.
+legacy identity ``<uid>.<username>``. Временный previous-email содержит тот же
+маркер, поэтому grace-credential не становится отдельным устройством в online.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
+DEVICE_VLESS_UUID_TTL = timedelta(hours=48)
+DEVICE_VLESS_UUID_ROTATE_BEFORE = timedelta(hours=6)
+DEVICE_VLESS_UUID_GRACE = timedelta(minutes=30)
+
 
 def device_email(user_id: int, device_id: int, username: str) -> str:
     return f"{user_id}.d{device_id}.{username}"
+
+
+def previous_device_email(user_id: int, device_id: int, username: str) -> str:
+    return f"{user_id}.d{device_id}.previous.{username}"
+
+
+def active_device_credentials(device, now: datetime) -> list[tuple[str, bool]]:
+    """Вернуть (uuid, is_previous), отсекая истёкшие и revoked credentials.
+
+    NULL expiry у текущего UUID обслуживает старые строки, созданные тестами или
+    внешними модулями до миграции. Штатная миграция проставляет им 48 часов.
+    """
+    if device.status != "active":
+        return []
+    credentials = []
+    if device.vless_uuid and (
+        device.vless_uuid_expires_at is None or device.vless_uuid_expires_at > now
+    ):
+        credentials.append((device.vless_uuid, False))
+    if (
+        device.previous_vless_uuid
+        and device.previous_vless_uuid_expires_at is not None
+        and device.previous_vless_uuid_expires_at > now
+    ):
+        credentials.append((device.previous_vless_uuid, True))
+    return credentials
 
 
 def parse_xray_identity(email: str) -> tuple[str, int | None]:
